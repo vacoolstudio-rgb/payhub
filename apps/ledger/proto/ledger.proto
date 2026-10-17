@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package payhub.ledger.v1;
+
+// Synchronous read API of the ledger service.
+//
+// gRPC is the right tool here and REST is not: this endpoint is called by
+// another service on every dashboard render, the contract is fixed and
+// strongly typed, HTTP/2 multiplexes the calls over one connection, and
+// protobuf framing is a fraction of the JSON payload. The public-facing API
+// stays REST, where ubiquity and cacheability matter more than microseconds.
+service LedgerService {
+  rpc GetBalances (GetBalancesRequest) returns (GetBalancesResponse);
+  rpc GetWallet (GetWalletRequest) returns (WalletView);
+  rpc GetStatement (GetStatementRequest) returns (GetStatementResponse);
+}
+
+message Money {
+  // Minor units as a decimal string: protobuf int64 becomes a JS string
+  // anyway, and being explicit prevents a silent float conversion.
+  string amount_minor = 1;
+  string currency = 2;
+}
+
+message GetBalancesRequest {
+  string user_id = 1;
+}
+
+message GetBalancesResponse {
+  repeated WalletView wallets = 1;
+}
+
+message GetWalletRequest {
+  string wallet_id = 1;
+}
+
+message WalletView {
+  string id = 1;
+  string user_id = 2;
+  string currency = 3;
+  Money available = 4;
+  Money pending = 5;
+  string status = 6;
+  int32 version = 7;
+  string updated_at = 8;
+}
+
+message GetStatementRequest {
+  string user_id = 1;
+  string currency = 2;
+  int32 limit = 3;
+  string cursor = 4;
+}
+
+message StatementRow {
+  string transfer_id = 1;
+  string purpose = 2;
+  string description = 3;
+  string account = 4;
+  string direction = 5;
+  Money amount = 6;
+  string posted_at = 7;
+  string payment_id = 8;
+}
+
+message GetStatementResponse {
+  repeated StatementRow rows = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}

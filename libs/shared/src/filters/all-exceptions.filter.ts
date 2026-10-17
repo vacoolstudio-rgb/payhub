@@ -1,0 +1,229 @@
+import {
+  type ArgumentsHost,
+  Catch,
+  type ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Logger,
+} from '@nestjs/common';
+import { HttpAdapterHost } from '@nestjs/core';
+import { ClsService } from 'nestjs-cls';
+import { DomainError } from '@payhub/kernel';
+import { QueryFailedError } from 'typeorm';
+import type { PayHubClsStore } from '../types/request-context.js';
+import {
+  PROBLEM_BASE_URI,
+  type ProblemDetails,
+  problemFromDomainError,
+} from '../http/problem-details.js';
+
+/**
+ * The single exit point for every unhandled error.
+ *
+ * Responsibilities, in order:
+ *   1. translate domain errors into RFC 9457 problem details;
+ *   2. translate known infrastructure errors (unique violation, deadlock,
+ *      lock timeout) into meaningful HTTP semantics instead of a blanket 500;
+ *   3. never leak internals — unknown errors become a correlated 500.
+ */
+@Catch()
+export class AllExceptionsFilter implements ExceptionFilter {
+  private readonly logger = new Logger(AllExceptionsFilter.name);
+
+  constructor(
+    @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
+    private readonly cls: ClsService<PayHubClsStore>,
+  ) {}
+
+  catch(exception: unknown, host: ArgumentsHost): void {
+    // GraphQL and RPC contexts have no HTTP response to write to.
+    if (host.getType<string>() !== 'http') {
+      throw exception;
+    }
+
+    const { httpAdapter } = this.adapterHost;
+    const ctx = host.switchToHttp();
+    const request = ctx.getRequest<{ url?: string; method?: string }>();
+    const correlationId = this.cls.getId?.() ?? this.cls.get('correlationId');
+
+    const problem = this.toProblem(exception, {
+      instance: request?.url,
+      correlationId,
+    });
+
+    this.log(exception, problem, request?.method);
+
+    const response = ctx.getResponse();
+    httpAdapter.setHeader?.(response, 'content-type', 'application/problem+json');
+    httpAdapter.reply(response, problem, problem.status);
+  }
+
+  private toProblem(
+    exception: unknown,
+    context: { instance?: string | undefined; correlationId?: string | undefined },
+  ): ProblemDetails {
+    const base = {
+      ...(context.instance === undefined ? {} : { instance: context.instance }),
+      ...(context.correlationId === undefined ? {} : { correlationId: context.correlationId }),
+    };
+
+    if (exception instanceof DomainError) {
+      return problemFromDomainError(exception, base);
+    }
+
+    if (exception instanceof HttpException) {
+      return fromHttpException(exception, base);
+    }
+
+    const pgProblem = fromPostgresError(exception, base);
+    if (pgProblem) {
+      return pgProblem;
+    }
+
+    return {
+      type: `${PROBLEM_BASE_URI}/internal-error`,
+      title: 'Internal server error',
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      detail: 'An unexpected error occurred. Quote the correlation id when reporting it.',
+      code: 'INTERNAL_ERROR',
+      ...base,
+      timestamp: new Date().toISOString(),
+    } as ProblemDetails;
+  }
+
+  private log(exception: unknown, problem: ProblemDetails, method?: string): void {
+    const prefix = `${method ?? 'UNKNOWN'} ${problem.instance ?? ''} → ${problem.status} ${problem.code}`;
+
+    if (problem.status >= 500) {
+      this.logger.error(prefix, exception instanceof Error ? exception.stack : String(exception));
+      return;
+    }
+    if (problem.status === HttpStatus.TOO_MANY_REQUESTS) {
+      this.logger.warn(prefix);
+      return;
+    }
+    this.logger.debug(prefix);
+  }
+}
+
+function fromHttpException(
+  exception: HttpException,
+  base: { instance?: string | undefined; correlationId?: string | undefined },
+): ProblemDetails {
+  const status = exception.getStatus();
+  const response = exception.getResponse();
+  const payload =
+    typeof response === 'string' ? { message: response } : (response as Record<string, unknown>);
+
+  const message = payload['message'];
+  // Nest puts arbitrary shapes in an HttpException body, so each field is
+  // narrowed before it is rendered — `String({})` is "[object Object]",
+  // which is a terrible thing to send a client as an error title.
+  const title = asString(payload['error']) ?? exception.name;
+
+  return {
+    type: `${PROBLEM_BASE_URI}/${title.toLowerCase().replace(/\s+/g, '-')}`,
+    title,
+    status,
+    detail: Array.isArray(message)
+      ? message.map((item) => asString(item) ?? 'invalid value').join('; ')
+      : (asString(message) ?? exception.message),
+    code: asString(payload['code']) ?? httpStatusToCode(status),
+    ...base,
+    timestamp: new Date().toISOString(),
+    ...(Array.isArray(message) ? { errors: { validation: message } } : {}),
+  } as ProblemDetails;
+}
+
+/** Postgres SQLSTATE codes worth translating instead of hiding behind a 500. */
+const PG_CODES: Record<string, { status: HttpStatus; code: string; detail: string }> = {
+  '23505': {
+    status: HttpStatus.CONFLICT,
+    code: 'UNIQUE_VIOLATION',
+    detail: 'A resource with the same unique key already exists',
+  },
+  '23503': {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    code: 'FOREIGN_KEY_VIOLATION',
+    detail: 'A referenced resource does not exist',
+  },
+  '23514': {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    code: 'CHECK_VIOLATION',
+    detail: 'A database invariant rejected the write',
+  },
+  '40001': {
+    status: HttpStatus.CONFLICT,
+    code: 'SERIALIZATION_FAILURE',
+    detail: 'The transaction conflicted with a concurrent one — retry the request',
+  },
+  '40P01': {
+    status: HttpStatus.CONFLICT,
+    code: 'DEADLOCK_DETECTED',
+    detail: 'A deadlock was detected — retry the request',
+  },
+  '55P03': {
+    status: HttpStatus.CONFLICT,
+    code: 'LOCK_NOT_AVAILABLE',
+    detail: 'The resource is locked by another operation — retry shortly',
+  },
+  '57014': {
+    status: HttpStatus.GATEWAY_TIMEOUT,
+    code: 'STATEMENT_TIMEOUT',
+    detail: 'The database statement exceeded its time budget',
+  },
+};
+
+function fromPostgresError(
+  exception: unknown,
+  base: { instance?: string | undefined; correlationId?: string | undefined },
+): ProblemDetails | null {
+  const driverError =
+    exception instanceof QueryFailedError
+      ? (exception.driverError as { code?: string } | undefined)
+      : (exception as { code?: string } | undefined);
+
+  const mapped = driverError?.code ? PG_CODES[driverError.code] : undefined;
+  if (!mapped) {
+    return null;
+  }
+
+  return {
+    type: `${PROBLEM_BASE_URI}/${mapped.code.toLowerCase().replace(/_/g, '-')}`,
+    title: mapped.code,
+    status: mapped.status,
+    detail: mapped.detail,
+    code: mapped.code,
+    ...base,
+    timestamp: new Date().toISOString(),
+  } as ProblemDetails;
+}
+
+/** Returns the value only when it is already a primitive worth printing. */
+function asString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return undefined;
+}
+
+/**
+ * Built once, not on every error.
+ *
+ * `Object.entries(HttpStatus).find(...)` allocated an array of ~60 pairs and
+ * scanned it linearly for each exception — on the one code path that is
+ * already hot during an incident.
+ */
+const STATUS_NAMES: ReadonlyMap<number, string> = new Map(
+  Object.entries(HttpStatus)
+    .filter(([, value]) => typeof value === 'number')
+    .map(([name, value]) => [value as number, name]),
+);
+
+function httpStatusToCode(status: number): string {
+  return STATUS_NAMES.get(status) ?? `HTTP_${status}`;
+}

@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: local
+
+scrape_configs:
+  # Each service exposes /metrics on its own HTTP port. In a cluster this
+  # comes from pod annotations instead of a static list.
+  - job_name: payhub
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:3000']
+        labels: { service: api }
+      - targets: ['ledger:3001']
+        labels: { service: ledger }
+      - targets: ['worker:3002']
+        labels: { service: worker }
+      - targets: ['notifications:3003']
+        labels: { service: notifications }

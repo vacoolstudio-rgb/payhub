@@ -1,23 +1,70 @@
 {
   "compilerOptions": {
+    /* --- Module system -------------------------------------------------- */
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "resolvePackageJsonExports": true,
     "esModuleInterop": true,
-    "isolatedModules": true,
-    "declaration": true,
-    "removeComments": true,
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+
+    /* --- Emit ------------------------------------------------------------ */
     "target": "ES2023",
-    "sourceMap": true,
+    "lib": ["ES2023"],
     "outDir": "./dist",
     "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "removeComments": false,
     "incremental": true,
-    "skipLibCheck": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsconfig.tsbuildinfo",
+
+    /* --- Decorators ------------------------------------------------------
+     * `emitDecoratorMetadata` makes tsc emit `design:paramtypes`, which is how
+     * Nest's IoC container learns what to inject. `useDefineForClassFields`
+     * MUST stay false: with ES2022 semantics class fields are emitted as
+     * `Object.defineProperty` with `undefined`, which wipes the values that
+     * TypeORM / class-transformer assign through the prototype.
+     */
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "useDefineForClassFields": false,
+
+    /* --- Type checking ---------------------------------------------------- */
     "strict": true,
     "strictPropertyInitialization": false,
-    "types": ["vitest/globals", "node"]
-  }
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    /* An optional property is "may be absent", not "may be present and
+     * undefined". Without this, `{ merchantId: undefined }` satisfies
+     * `{ merchantId?: string }`, which is how an accidental undefined
+     * reaches a partial update and erases a column. */
+    "exactOptionalPropertyTypes": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    /* --- Paths ------------------------------------------------------------ */
+    "paths": {
+      "@payhub/kernel": ["./libs/kernel/src/index.ts"],
+      "@payhub/shared": ["./libs/shared/src/index.ts"],
+      "@payhub/config": ["./libs/config/src/index.ts"],
+      "@payhub/persistence": ["./libs/persistence/src/index.ts"],
+      "@payhub/redis": ["./libs/redis/src/index.ts"],
+      "@payhub/queue": ["./libs/queue/src/index.ts"],
+      "@payhub/messaging": ["./libs/messaging/src/index.ts"],
+      "@payhub/observability": ["./libs/observability/src/index.ts"],
+      "@payhub/contracts": ["./libs/contracts/src/index.ts"],
+      "@payhub/testing": ["./libs/testing/src/index.ts"]
+    },
+
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["apps/**/*.ts", "libs/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist", "playground"]
 }

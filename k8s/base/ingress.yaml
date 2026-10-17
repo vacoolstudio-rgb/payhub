@@ -1,0 +1,101 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payhub
+  namespace: payhub
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # SSE and WebSocket both need the proxy to stop buffering and to allow a
+    # long-lived connection; the defaults cut the assistant stream off after
+    # 60 seconds.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # The application does its own per-principal rate limiting in Redis;
+    # this is the crude edge limit that protects it from a flood before any
+    # Node process is involved.
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.payhub.example]
+      secretName: payhub-tls
+  rules:
+    - host: api.payhub.example
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: payhub-api
+                port: { name: http }
+          - path: /graphql
+            pathType: Prefix
+            backend:
+              service:
+                name: payhub-api
+                port: { name: http }
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: payhub-api
+                port: { name: http }
+---
+# Default-deny, then allow exactly the traffic the architecture describes.
+# This is where the bounded-context boundary becomes a network rule rather
+# than a convention: nothing but the ledger may reach the ledger's port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: payhub
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api
+  namespace: payhub
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: payhub-api }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports:
+        - { protocol: TCP, port: 3000 }
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: observability }
+      ports:
+        - { protocol: TCP, port: 3000 }
+  egress:
+    # Only the ledger's gRPC port — not its HTTP port, and nothing else.
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: payhub-ledger }
+      ports:
+        - { protocol: TCP, port: 50051 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: redis } }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: kafka } }
+      ports:
+        - { protocol: TCP, port: 9092 }
+    # DNS, and egress to the LLM provider.
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 443 }

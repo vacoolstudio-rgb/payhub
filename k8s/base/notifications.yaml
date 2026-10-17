@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payhub-notifications
+  namespace: payhub
+  labels:
+    app.kubernetes.io/name: payhub-notifications
+    app.kubernetes.io/part-of: payhub
+spec:
+  # One replica per partition is the useful ceiling for a Kafka consumer
+  # group; beyond that the extra pods sit idle holding no assignment.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payhub-notifications
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payhub-notifications
+        app.kubernetes.io/part-of: payhub
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3003"
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: notifications
+          image: ghcr.io/payhub/notifications:latest
+          ports:
+            - { name: http, containerPort: 3003 }
+          env:
+            - { name: SERVICE_NAME, value: payhub-notifications }
+            - { name: PORT, value: "3003" }
+            - { name: KAFKA_CONSUMER_GROUP, value: payhub }
+            - { name: DATABASE_RUN_MIGRATIONS, value: "false" }
+          envFrom:
+            - configMapRef: { name: payhub-config }
+            - secretRef: { name: payhub-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}

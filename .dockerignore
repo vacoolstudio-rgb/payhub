@@ -1,0 +1,18 @@
+node_modules
+dist
+coverage
+.git
+.github
+.idea
+.vscode
+playground
+# The backend images never serve the SPA; it has its own Dockerfile.
+web
+*.log
+.env
+.env.*
+!.env.example
+docker-compose*.yml
+k8s
+README.md
+docs

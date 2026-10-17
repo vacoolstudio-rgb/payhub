@@ -1,0 +1,269 @@
+/* PayHub dashboard — a small, deliberately boring design system.
+   Tokens first so dark mode is a variable swap, not a second stylesheet. */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e3e6ea;
+  --text: #16191d;
+  --muted: #697280;
+  --accent: #2f6fed;
+  --ok: #1a7f52;
+  --warn: #b26a00;
+  --bad: #c0352b;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 10%);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --surface: #171a20;
+    --border: #262b33;
+    --text: #e8eaed;
+    --muted: #949cab;
+    --accent: #6c9bff;
+    --ok: #4ec08a;
+    --warn: #e0a033;
+    --bad: #f07167;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.brand { font-weight: 650; letter-spacing: -0.01em; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.right { text-align: right; }
+.error { color: var(--bad); margin: 8px 0 0; }
+
+/* --- layout --------------------------------------------------------- */
+
+.shell { max-width: 1180px; margin: 0 auto; padding: 0 20px 48px; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 0;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.wide { grid-column: 1 / -1; }
+
+@media (max-width: 860px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.card-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+
+/* The pill names the transport each panel uses — the whole point of the demo. */
+.pill {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+/* --- auth ------------------------------------------------------------ */
+
+.auth-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.auth-card { width: min(380px, 100%); }
+.auth-card h1 { margin: 0 0 4px; font-size: 22px; }
+
+.tabs { display: flex; gap: 6px; margin: 18px 0 14px; }
+
+.tab {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab.active { color: var(--text); border-color: var(--accent); }
+
+/* --- forms ----------------------------------------------------------- */
+
+label { display: block; margin-bottom: 12px; font-size: 12.5px; color: var(--muted); }
+
+input,
+select {
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 11px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+input:focus-visible,
+select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button { font: inherit; cursor: pointer; }
+
+.primary {
+  width: 100%;
+  padding: 10px 14px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  font-weight: 550;
+}
+
+.primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.ghost {
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.payment-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.payment-form .primary { grid-column: 1 / -1; width: auto; }
+
+/* --- wallets & stats -------------------------------------------------- */
+
+.wallets { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.wallet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 140px;
+}
+
+.wallet .currency { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
+.wallet .amount { font-size: 22px; font-variant-numeric: tabular-nums; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.stats div { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.stats strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+
+/* --- table ------------------------------------------------------------ */
+
+.table { width: 100%; border-collapse: collapse; }
+
+.table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 10px 8px;
+}
+
+.table td { padding: 9px 10px; border-top: 1px solid var(--border); }
+.table tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+/* --- status ----------------------------------------------------------- */
+
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentcolor; }
+.status.ok { color: var(--ok); }
+.status.warn { color: var(--warn); }
+.status.bad { color: var(--bad); }
+
+/* --- assistant & feed -------------------------------------------------- */
+
+.assistant-form { display: flex; gap: 8px; align-items: flex-start; }
+.assistant-form input { margin-top: 0; }
+.assistant-form .primary { width: auto; white-space: nowrap; }
+
+.suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.chip {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.chip:hover { color: var(--text); border-color: var(--accent); }
+
+.assistant-answer { margin: 14px 0 0; white-space: pre-wrap; }
+
+/* Blinking caret: the first token can take a second, and a blank panel
+   reads as a broken page. */
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink { to { visibility: hidden; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .caret { animation: none; }
+}
+
+.feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.feed li { color: var(--muted); }

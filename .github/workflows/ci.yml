@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes the previous run on the same branch; there is no
+  # value in finishing a build for a commit nobody will merge.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast feedback: everything that needs no services runs first and in
+  # parallel, so a typo fails in ~40 s instead of after a container boot.
+  # ---------------------------------------------------------------------------
+  static:
+    name: Lint, types & unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      # Native modules whose install scripts were skipped above.
+      - name: Rebuild native deps
+        run: npm rebuild @swc/core esbuild
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:cov
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Integration tests. Testcontainers starts Postgres itself, so no `services:`
+  # block is needed — the suite controls the lifecycle and the same code runs
+  # locally and in CI.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild native deps
+        run: npm rebuild @swc/core esbuild
+
+      - name: Integration tests
+        run: npm run test:e2e
+        env:
+          # Reuse keeps containers alive between suites in a local run; in CI
+          # the runner is discarded anyway, so turn it off to avoid surprises.
+          TESTCONTAINERS_REUSE_ENABLE: 'false'
+          JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
+          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
+          API_KEY_PEPPER: ci-api-key-pepper-value
+          DATABASE_URL: postgresql://payhub:payhub@localhost:5432/payhub
+
+  # ---------------------------------------------------------------------------
+  # Frontend
+  # ---------------------------------------------------------------------------
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - run: npm rebuild esbuild
+      - run: npm run typecheck
+      - run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Images. One build, four targets — buildx caches the shared `build` stage
+  # across them, so the second image costs almost nothing.
+  # ---------------------------------------------------------------------------
+  images:
+    name: Build ${{ matrix.service }} image
+    runs-on: ubuntu-latest
+    needs: [static]
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, ledger, worker, notifications]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.service }}
+          # Only publish from main; a PR build proves the image compiles.
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=payhub-${{ matrix.service }}
+          cache-to: type=gha,scope=payhub-${{ matrix.service }},mode=max
+          provenance: false
+
+  # ---------------------------------------------------------------------------
+  # A green build means the whole platform actually starts and settles a
+  # payment — the only check that exercises Kafka, the outbox, the saga and
+  # gRPC together.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Compose smoke test
+    runs-on: ubuntu-latest
+    needs: [static]
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the platform
+        run: docker compose up -d --build --wait --wait-timeout 600 postgres redis kafka api ledger worker
+        env:
+          JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
+          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
+          API_KEY_PEPPER: ci-api-key-pepper-value
+
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/health/ready; then exit 0; fi
+            sleep 5
+          done
+          echo "API never became ready"
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Seed and settle a payment
+        run: npx tsx scripts/seed.ts
+        env:
+          DATABASE_URL: postgresql://payhub:payhub@localhost:5432/payhub
+          JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
+          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
+          API_KEY_PEPPER: ci-api-key-pepper-value
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

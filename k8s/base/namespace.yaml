@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payhub
+  labels:
+    app.kubernetes.io/part-of: payhub
+    # Enforce the restricted Pod Security Standard: no privilege escalation,
+    # no root, no host namespaces. A payments platform has no excuse.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

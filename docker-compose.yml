@@ -1,41 +1,289 @@
+# =============================================================================
+# PayHub — full local platform.
+#
+#   docker compose up -d            infrastructure + all four services
+#   docker compose up -d postgres redis kafka   infrastructure only (for `npm run dev:*`)
+#
+# Every application service waits for its dependencies to be *healthy*, not
+# merely started: `depends_on: service_started` is why half of all "it works
+# on the second `up`" problems exist.
+# =============================================================================
+
+x-service-base: &service-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  # SIGTERM → graceful drain. 30 s is comfortably above SHUTDOWN_GRACE_MS so
+  # the app finishes on its own terms instead of being SIGKILLed.
+  stop_grace_period: 30s
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    kafka: { condition: service_healthy }
+  networks: [payhub]
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  LOG_PRETTY: "false"
+  DATABASE_URL: postgresql://payhub:payhub@postgres:5432/payhub
+  DATABASE_POOL_MAX: "20"
+  REDIS_URL: redis://redis:6379
+  REDIS_KEY_PREFIX: payhub
+  KAFKA_BROKERS: kafka:29092
+  KAFKA_CLIENT_ID: payhub
+  KAFKA_TOPIC_PREFIX: payhub
+  LEDGER_GRPC_URL: ledger:50051
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me-at-least-32-chars}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me-at-least-32-chars}
+  API_KEY_PEPPER: ${API_KEY_PEPPER:-dev-api-key-pepper-change-me}
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
 services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:18-alpine
-
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: payhub
+      POSTGRES_PASSWORD: payhub
       POSTGRES_DB: payhub
-
-    ports:
-      - "5432:5432"
-
+      # Checksums catch silent corruption; cheap insurance for a ledger.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      # Log anything slower than 200 ms — the cheapest performance tool there is.
+      - -c
+      - log_min_duration_statement=200
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+    ports: ["5432:5432"]
     volumes:
-      - postgres_data:/var/lib/postgresql
-
+      - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d payhub"]
+      # `pg_isready` with the real user and database, not just the port:
+      # the server accepts connections before it finishes initdb.
+      test: ["CMD-SHELL", "pg_isready -U payhub -d payhub"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
       start_period: 10s
+    networks: [payhub]
 
-  app:
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      # AOF every second: at most one second of writes is lost on a crash,
+      # without the per-write fsync cost of `always`. Acceptable because
+      # nothing in Redis here is a financial record — locks, caches, limits.
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      # Locks and idempotency keys must not be evicted at random, so only
+      # keys with a TTL are candidates.
+      - --maxmemory-policy
+      - volatile-lru
+    ports: ["6379:6379"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [payhub]
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      # KRaft: one process is both broker and controller, no ZooKeeper.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:29092,CONTROLLER://:9093,EXTERNAL://:9092
+      # Two advertised listeners: containers reach `kafka:29092`, the host
+      # reaches `localhost:9092`. Getting this wrong is the single most
+      # common Kafka-in-Docker failure.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+      CLUSTER_ID: payhub-local-cluster-0
+    ports: ["9092:9092"]
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    networks: [payhub]
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    environment:
+      KAFKA_CLUSTERS_0_NAME: payhub-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    ports: ["8080:8080"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    networks: [payhub]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "4318:4318"    # OTLP/HTTP
+    networks: [payhub]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    networks: [payhub]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./docker/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["3100:3000"]
+    depends_on: [prometheus]
+    networks: [payhub]
+
+  # ---------------------------------------------------------------------------
+  # Application services
+  # ---------------------------------------------------------------------------
+  api:
+    <<: *service-base
     build:
       context: .
       dockerfile: Dockerfile
-
-    ports:
-      - "3000:3000"
-
+      target: api
     environment:
-      NODE_ENV: production
-      PORT: 3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/payhub
-
+      <<: *app-env
+      SERVICE_NAME: payhub-api
+      PORT: "3000"
+      DATABASE_SCHEMA: payhub
+      # Only this service applies migrations. Two pods racing `runMigrations`
+      # is a deadlock, and the ledger owns a different schema anyway.
+      DATABASE_RUN_MIGRATIONS: "true"
+      KAFKA_CONSUMER_GROUP: payhub-api
+      CORS_ORIGINS: http://localhost:5173
+      TRUST_PROXY: "true"
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports: ["3000:3000"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      ledger: { condition: service_started }
+
+  ledger:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ledger
+    environment:
+      <<: *app-env
+      SERVICE_NAME: payhub-ledger
+      PORT: "3001"
+      DATABASE_SCHEMA: ledger
+      DATABASE_RUN_MIGRATIONS: "true"
+      KAFKA_CONSUMER_GROUP: payhub-ledger
+      GRPC_LISTEN_URL: 0.0.0.0:50051
+    ports:
+      - "3001:3001"
+      - "50051:50051"
+
+  worker:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    environment:
+      <<: *app-env
+      SERVICE_NAME: payhub-worker
+      PORT: "3002"
+      DATABASE_SCHEMA: payhub
+      DATABASE_RUN_MIGRATIONS: "false"
+      KAFKA_CONSUMER_GROUP: payhub-worker
+    ports: ["3002:3002"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      api: { condition: service_started }
+
+  notifications:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: notifications
+    environment:
+      <<: *app-env
+      SERVICE_NAME: payhub-notifications
+      PORT: "3003"
+      DATABASE_URL: postgresql://payhub:payhub@postgres:5432/payhub
+      DATABASE_RUN_MIGRATIONS: "false"
+      KAFKA_CONSUMER_GROUP: payhub
+    ports: ["3003:3003"]
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:3000
+    ports: ["5173:80"]
+    depends_on:
+      api: { condition: service_started }
+    networks: [payhub]
+
+networks:
+  payhub:
+    driver: bridge
 
 volumes:
-  postgres_data:
+  # Named `pgdata` rather than `postgres_data` so the pre-existing volume
+  # from the original scaffold is left untouched.
+  pgdata:
+  redis_data:
+  kafka_data:
+  grafana_data:

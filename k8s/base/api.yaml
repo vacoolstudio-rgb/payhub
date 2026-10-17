@@ -1,0 +1,217 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payhub-api
+  namespace: payhub
+  labels:
+    app.kubernetes.io/name: payhub-api
+    app.kubernetes.io/part-of: payhub
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payhub-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never go below the declared replica count during a deploy: the API
+      # is on the request path and a payments platform should not shed
+      # capacity to ship a version.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payhub-api
+        app.kubernetes.io/part-of: payhub
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "3000"
+    spec:
+      # Longer than SHUTDOWN_GRACE_MS so the app finishes draining on its
+      # own terms; if this is shorter, SIGKILL arrives mid-transaction.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        # Spread replicas across nodes so losing one node cannot take the
+        # whole API with it.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: payhub-api
+      containers:
+        - name: api
+          image: ghcr.io/payhub/api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: SERVICE_NAME
+              value: payhub-api
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_SCHEMA
+              value: payhub
+            - name: KAFKA_CONSUMER_GROUP
+              value: payhub-api
+            # Migrations belong to a Job, not to every replica racing them.
+            - name: DATABASE_RUN_MIGRATIONS
+              value: "false"
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app.kubernetes.io/version']
+          envFrom:
+            - configMapRef:
+                name: payhub-config
+            - secretRef:
+                name: payhub-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              # No CPU limit on purpose: CFS throttling on a Node process
+              # shows up as mysterious p99 latency. The request reserves
+              # capacity; the limit would only add jitter.
+              memory: 768Mi
+          startupProbe:
+            httpGet: { path: /health/startup, port: http }
+            periodSeconds: 5
+            # 2.5 minutes for a cold start (JIT, pools, Kafka join) before
+            # liveness takes over.
+            failureThreshold: 30
+          livenessProbe:
+            # Process-local only: restarting a pod because Redis blinked
+            # turns a dependency outage into an outage of our own.
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                # Give the endpoints controller time to remove this pod from
+                # the Service before the process starts refusing traffic;
+                # without it a rolling deploy drops in-flight requests.
+                command: ["sleep", "5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payhub-api
+  namespace: payhub
+spec:
+  selector:
+    app.kubernetes.io/name: payhub-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payhub-api
+  namespace: payhub
+spec:
+  # Voluntary disruptions (node drain, cluster upgrade) may never take the
+  # API below two healthy pods.
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payhub-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payhub-api
+  namespace: payhub
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payhub-api
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Scale down slowly: a brief dip in traffic is not a reason to give
+      # up warm connection pools and Kafka group membership.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+---
+# Migrations run once per release, before the new pods roll out.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: payhub-migrate
+  namespace: payhub
+  annotations:
+    # With Argo CD / Helm this is a pre-sync hook; plain kubectl users
+    # apply it first and wait for completion.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: migrate
+          image: ghcr.io/payhub/api:latest
+          command: ["node", "--enable-source-maps", "node_modules/.bin/tsx", "scripts/db.ts", "migrate"]
+          envFrom:
+            - configMapRef:
+                name: payhub-config
+            - secretRef:
+                name: payhub-secrets
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }

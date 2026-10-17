@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payhub-worker
+  namespace: payhub
+  labels:
+    app.kubernetes.io/name: payhub-worker
+    app.kubernetes.io/part-of: payhub
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payhub-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payhub-worker
+        app.kubernetes.io/part-of: payhub
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3002"
+    spec:
+      # Webhook deliveries in flight deserve a chance to finish; BullMQ
+      # would otherwise hand them to another worker as stalled jobs.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: ghcr.io/payhub/worker:latest
+          ports:
+            - { name: http, containerPort: 3002 }
+          env:
+            - { name: SERVICE_NAME, value: payhub-worker }
+            - { name: PORT, value: "3002" }
+            - { name: DATABASE_SCHEMA, value: payhub }
+            - { name: KAFKA_CONSUMER_GROUP, value: payhub-worker }
+            - { name: DATABASE_RUN_MIGRATIONS, value: "false" }
+          envFrom:
+            - configMapRef: { name: payhub-config }
+            - secretRef: { name: payhub-secrets }
+          resources:
+            requests: { cpu: 150m, memory: 320Mi }
+            limits: { memory: 640Mi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payhub-worker
+  namespace: payhub
+spec:
+  selector:
+    app.kubernetes.io/name: payhub-worker
+  ports:
+    - { name: http, port: 3002, targetPort: http }
+---
+# Queue depth, not CPU: a webhook worker is I/O bound, so it can be at 5 %
+# CPU with ten thousand jobs waiting. This needs KEDA (or a custom metrics
+# adapter) to expose the BullMQ backlog.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: payhub-worker
+  namespace: payhub
+spec:
+  scaleTargetRef:
+    name: payhub-worker
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  cooldownPeriod: 300
+  triggers:
+    - type: redis
+      metadata:
+        address: redis.payhub:6379
+        listName: payhub:bull:webhook-delivery:wait
+        listLength: "100"

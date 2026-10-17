@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payhub-config
+  namespace: payhub
+data:
+  NODE_ENV: production
+  LOG_LEVEL: info
+  LOG_PRETTY: "false"
+  METRICS_ENABLED: "true"
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability:4318
+
+  REDIS_URL: redis://redis.payhub:6379
+  REDIS_KEY_PREFIX: payhub
+  KAFKA_BROKERS: kafka-0.kafka.payhub:9092,kafka-1.kafka.payhub:9092,kafka-2.kafka.payhub:9092
+  KAFKA_CLIENT_ID: payhub
+  KAFKA_TOPIC_PREFIX: payhub
+  LEDGER_GRPC_URL: payhub-ledger.payhub:50051
+
+  DATABASE_POOL_MIN: "2"
+  # Per pod. With 4 API replicas that is 80 connections, so the Postgres
+  # `max_connections` (or the PgBouncer pool) has to be sized for it —
+  # exhausting the database from the application side is a classic outage.
+  DATABASE_POOL_MAX: "20"
+  DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+  DATABASE_LOCK_TIMEOUT_MS: "5000"
+
+  SHUTDOWN_GRACE_MS: "15000"
+  REQUEST_TIMEOUT_MS: "30000"
+  TRUST_PROXY: "true"
+  THROTTLE_TTL_MS: "60000"
+  THROTTLE_LIMIT: "120"
+  OUTBOX_POLL_INTERVAL_MS: "500"
+  OUTBOX_BATCH_SIZE: "200"
+  WEBHOOK_MAX_ATTEMPTS: "8"
+  RECONCILIATION_CRON: "*/5 * * * *"
+---
+# Placeholder only. In a real cluster these come from External Secrets,
+# Vault or the cloud provider's secret manager — never from a file in git.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: payhub-secrets
+  namespace: payhub
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://payhub:CHANGE_ME@postgres.payhub:5432/payhub
+  JWT_ACCESS_SECRET: CHANGE_ME_at_least_32_characters_long_value
+  JWT_REFRESH_SECRET: CHANGE_ME_different_32_characters_long_value
+  API_KEY_PEPPER: CHANGE_ME_api_key_pepper
+  ANTHROPIC_API_KEY: ""

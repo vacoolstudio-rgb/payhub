@@ -1,0 +1,33 @@
+{
+  "$schema": "https://swc.rs/schema.json",
+  "jsc": {
+    "target": "es2023",
+    "parser": {
+      "syntax": "typescript",
+      "decorators": true
+    },
+    "transform": {
+      "legacyDecorator": true,
+      "decoratorMetadata": true,
+      "useDefineForClassFields": false
+    },
+    "keepClassNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@payhub/kernel": ["./libs/kernel/src/index.ts"],
+      "@payhub/shared": ["./libs/shared/src/index.ts"],
+      "@payhub/config": ["./libs/config/src/index.ts"],
+      "@payhub/persistence": ["./libs/persistence/src/index.ts"],
+      "@payhub/redis": ["./libs/redis/src/index.ts"],
+      "@payhub/queue": ["./libs/queue/src/index.ts"],
+      "@payhub/messaging": ["./libs/messaging/src/index.ts"],
+      "@payhub/observability": ["./libs/observability/src/index.ts"],
+      "@payhub/contracts": ["./libs/contracts/src/index.ts"],
+      "@payhub/testing": ["./libs/testing/src/index.ts"]
+    }
+  },
+  "module": {
+    "type": "nodenext"
+  },
+  "sourceMaps": true
+}
