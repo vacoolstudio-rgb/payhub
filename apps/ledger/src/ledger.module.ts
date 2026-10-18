@@ -18,6 +18,7 @@ import { LedgerCommandConsumer } from './infrastructure/messaging/ledger-command
 import { InitLedgerSchema1740000000000 } from './infrastructure/migrations/1740000000000-InitLedgerSchema.js';
 import { DropRedundantWalletIndex1740000000004 } from './infrastructure/migrations/1740000000004-DropRedundantWalletIndex.js';
 import { JournalEntriesAppendOnly1740000000005 } from './infrastructure/migrations/1740000000005-JournalEntriesAppendOnly.js';
+import { ReversalForeignKeyIndexes1740000000009 } from './infrastructure/migrations/1740000000009-ReversalForeignKeyIndexes.js';
 import { JournalEntryEntity } from './infrastructure/persistence/entities/journal-entry.entity.js';
 import { PostingEntity } from './infrastructure/persistence/entities/posting.entity.js';
 import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
@@ -57,6 +58,7 @@ import { LedgerGrpcController } from './presentation/grpc/ledger.grpc.controller
         InitLedgerSchema1740000000000,
         DropRedundantWalletIndex1740000000004,
         JournalEntriesAppendOnly1740000000005,
+        ReversalForeignKeyIndexes1740000000009,
       ],
     }),
     MessagingModule.forRoot({ consumer: true, relay: true }),

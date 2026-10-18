@@ -20,11 +20,26 @@ export class CapturingRequiresTransfer1740000000006 implements MigrationInterfac
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`SET LOCAL search_path TO payhub, public`);
+    // Never queue behind a long transaction holding the table: a DDL
+    // statement waiting for ACCESS EXCLUSIVE blocks every query that
+    // arrives after it, including plain SELECTs.
+    await queryRunner.query(`SET LOCAL lock_timeout = '3s'`);
 
+    // Two steps on purpose. `ADD CONSTRAINT ... CHECK` validates the whole
+    // table while holding ACCESS EXCLUSIVE — on a large `payments` that is
+    // a full scan with the table shut. `NOT VALID` takes the strong lock
+    // only for the catalogue change, and `VALIDATE CONSTRAINT` does the
+    // scan afterwards under SHARE UPDATE EXCLUSIVE, which lets reads and
+    // writes continue.
     await queryRunner.query(`
       ALTER TABLE payments
         ADD CONSTRAINT ck_payments_capturing_has_transfer
         CHECK (status <> 'capturing' OR transfer_id IS NOT NULL)
+        NOT VALID
+    `);
+
+    await queryRunner.query(`
+      ALTER TABLE payments VALIDATE CONSTRAINT ck_payments_capturing_has_transfer
     `);
   }
 

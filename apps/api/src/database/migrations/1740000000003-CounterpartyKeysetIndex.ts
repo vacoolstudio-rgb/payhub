@@ -26,27 +26,41 @@ import type { MigrationInterface, QueryRunner } from 'typeorm';
 export class CounterpartyKeysetIndex1740000000003 implements MigrationInterface {
   name = 'CounterpartyKeysetIndex1740000000003';
 
+  /**
+   * Outside a transaction, because `CREATE INDEX CONCURRENTLY` cannot run
+   * inside one. `payments` already holds production rows by the time this
+   * runs, and a plain `CREATE INDEX` takes a SHARE lock — every INSERT,
+   * UPDATE and DELETE on the payments table waits for the whole build.
+   *
+   * The cost of `CONCURRENTLY` is that a failure leaves an invalid index
+   * behind, and that there is no transaction to roll back: the `down`
+   * below has to be able to clean up a half-finished `up`.
+   */
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`SET LOCAL search_path TO payhub, public`);
+    // `SET LOCAL` needs a transaction; there is none here.
+    await queryRunner.query(`SET search_path TO payhub, public`);
 
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS ix_payments_counterparty_created
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_counterparty_created
         ON payments (counterparty_user_id, created_at DESC, id DESC)
         WHERE counterparty_user_id IS NOT NULL
     `);
 
-    await queryRunner.query(`DROP INDEX IF EXISTS ix_payments_counterparty`);
+    // Only once the replacement is in place and valid.
+    await queryRunner.query(`DROP INDEX CONCURRENTLY IF EXISTS ix_payments_counterparty`);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`SET LOCAL search_path TO payhub, public`);
+    await queryRunner.query(`SET search_path TO payhub, public`);
 
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS ix_payments_counterparty
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_counterparty
         ON payments (counterparty_user_id)
         WHERE counterparty_user_id IS NOT NULL
     `);
 
-    await queryRunner.query(`DROP INDEX IF EXISTS ix_payments_counterparty_created`);
+    await queryRunner.query(`DROP INDEX CONCURRENTLY IF EXISTS ix_payments_counterparty_created`);
   }
 }

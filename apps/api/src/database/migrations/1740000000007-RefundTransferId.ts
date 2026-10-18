@@ -18,9 +18,15 @@ import type { MigrationInterface, QueryRunner } from 'typeorm';
 export class RefundTransferId1740000000007 implements MigrationInterface {
   name = 'RefundTransferId1740000000007';
 
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`SET LOCAL search_path TO payhub, public`);
+  /** See the index below: `CONCURRENTLY` cannot run inside a transaction. */
+  transaction = false;
 
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`SET search_path TO payhub, public`);
+    await queryRunner.query(`SET lock_timeout = '3s'`);
+
+    // Nullable and without a default, so this is a catalogue-only change:
+    // instant on PostgreSQL 11+, no table rewrite.
     await queryRunner.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_transfer_id uuid`);
     // The amount too: the ledger ignores it on a duplicate, but if the
     // transfer never posted the retry must be for the amount originally
@@ -31,16 +37,18 @@ export class RefundTransferId1740000000007 implements MigrationInterface {
     );
 
     // The sweep looks for refunds that have been in flight too long.
+    // Concurrently: `payments` is live by now, and a plain CREATE INDEX
+    // would block every write to it for the duration of the build.
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS ix_payments_stalled_refunds
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_stalled_refunds
         ON payments (updated_at)
         WHERE status = 'refunding'
     `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`SET LOCAL search_path TO payhub, public`);
-    await queryRunner.query(`DROP INDEX IF EXISTS ix_payments_stalled_refunds`);
+    await queryRunner.query(`SET search_path TO payhub, public`);
+    await queryRunner.query(`DROP INDEX CONCURRENTLY IF EXISTS ix_payments_stalled_refunds`);
     await queryRunner.query(`ALTER TABLE payments DROP COLUMN IF EXISTS refund_amount_minor`);
     await queryRunner.query(`ALTER TABLE payments DROP COLUMN IF EXISTS refund_transfer_id`);
   }
