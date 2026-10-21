@@ -179,7 +179,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Start the platform
-        run: docker compose up -d --build --wait --wait-timeout 600 postgres redis kafka api ledger worker
+        # notifications included: it is the one service on the Nest Kafka
+        # transport rather than the hand-written consumer, so nothing else
+        # in CI exercises that path.
+        run: >-
+          docker compose up -d --build --wait --wait-timeout 600
+          postgres redis kafka api ledger worker notifications
         env:
           JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
           JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
@@ -208,6 +213,49 @@ jobs:
           JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
           JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
           API_KEY_PEPPER: ci-api-key-pepper-value
+
+      - name: Every service is serving
+        run: |
+          for port in 3000 3001 3002 3003; do
+            curl -fsS "http://localhost:$port/health/ready" > /dev/null \
+              || { echo "service on :$port is not ready"; exit 1; }
+          done
+
+      # The cheapest integrity check the platform has, and the one that
+      # catches a posting written outside the aggregate. A smoke test that
+      # settles a payment without checking this proves only that nothing
+      # threw.
+      - name: Ledger invariants hold
+        run: |
+          psql() { docker compose exec -T postgres psql -U payhub -d payhub -tAc "$1"; }
+
+          unbalanced=$(psql "SELECT coalesce(string_agg(currency || '=' || total, ', '), '')
+            FROM (SELECT currency,
+                         SUM(CASE WHEN direction = 'debit' THEN -amount_minor ELSE amount_minor END) AS total
+                  FROM ledger.postings GROUP BY currency) t
+            WHERE total <> 0;")
+          if [ -n "$unbalanced" ]; then
+            echo "trial balance is not zero: $unbalanced"; exit 1
+          fi
+
+          entries=$(psql "SELECT count(*) FROM (
+            SELECT entry_id FROM ledger.postings GROUP BY entry_id, currency
+            HAVING SUM(CASE WHEN direction = 'debit' THEN -amount_minor ELSE amount_minor END) <> 0) t;")
+          if [ "$entries" != "0" ]; then
+            echo "$entries journal entries do not balance"; exit 1
+          fi
+
+          drift=$(psql "SELECT count(*) FROM ledger.wallets w
+            WHERE w.available_minor <> COALESCE((
+              SELECT SUM(CASE WHEN p.direction = 'credit' THEN p.amount_minor ELSE -p.amount_minor END)
+              FROM ledger.postings p
+              WHERE p.owner_id = w.user_id::text AND p.currency = w.currency
+                AND p.account_kind = 'user_available'), 0);")
+          if [ "$drift" != "0" ]; then
+            echo "$drift wallet projections drifted from the journal"; exit 1
+          fi
+
+          echo "trial balance zero, every entry balances, no projection drift"
 
       - name: Dump logs on failure
         if: failure()

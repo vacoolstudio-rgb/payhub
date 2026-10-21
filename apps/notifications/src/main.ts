@@ -4,7 +4,12 @@ import { NestFactory } from '@nestjs/core';
 import { type MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { type AppConfig, type KafkaConfig, appConfig, kafkaConfig, loadEnv } from '@payhub/config';
-import { fatalExit, startTracing, stopTracing } from '@payhub/observability';
+import {
+  fatalExit,
+  installGracefulShutdown,
+  startTracing,
+  stopTracing,
+} from '@payhub/observability';
 import { NotificationsModule } from './notifications.module.js';
 
 async function bootstrap(): Promise<void> {
@@ -61,12 +66,16 @@ async function bootstrap(): Promise<void> {
   );
 
   app.enableShutdownHooks();
-  process.on('SIGTERM', () => {
-    void (async () => {
-      await stopTracing();
-      await app.close();
-      process.exit(0);
-    })();
+
+  // The shared helper rather than a hand-rolled SIGTERM listener, which is
+  // what this was. That version handled only SIGTERM — Ctrl-C went to
+  // Node's default and the Kafka consumer never committed its offsets —
+  // and it had no watchdog, so an `app.close()` stuck on a consumer
+  // rebalance left the pod in Terminating until the orchestrator killed
+  // it, with nothing in the logs to say why.
+  installGracefulShutdown(app, {
+    graceMs: config.shutdownGraceMs,
+    beforeClose: () => stopTracing(),
   });
 
   await app.startAllMicroservices();
