@@ -20,7 +20,7 @@
     "db:show": "tsx scripts/db.ts show",
     "db:seed": "tsx scripts/seed.ts",
     "migration:generate": "tsx scripts/db.ts generate",
-    "lint": "oxlint --type-aware apps/ libs/ test/",
+    "lint": "oxlint --type-aware apps/ libs/ test/ web/src/",
     "format": "prettier --write \"{apps,libs,test,scripts}/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",

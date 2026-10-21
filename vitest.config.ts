@@ -31,7 +31,16 @@ export default defineConfig({
   test: {
     globals: true,
     root: './',
-    include: ['libs/**/*.spec.ts', 'apps/**/*.spec.ts', 'test/**/*.spec.ts'],
+    // `web` is in here for its framework-free logic only — the SSE frame
+    // parser. Anything needing a DOM would want its own runner with
+    // jsdom and testing-library; pulling that in to assert on markup
+    // this small would cost more than it proves.
+    include: [
+      'libs/**/*.spec.ts',
+      'apps/**/*.spec.ts',
+      'test/**/*.spec.ts',
+      'web/src/**/*.spec.ts',
+    ],
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.e2e-spec.ts'],
     environment: 'node',
     // Domain tests are pure and fast; isolate per file so a leaked singleton

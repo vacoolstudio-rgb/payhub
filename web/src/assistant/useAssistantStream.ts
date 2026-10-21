@@ -1,3 +1,4 @@
+import { parsePayload, scanFrames } from './sse';
 import { useCallback, useRef, useState } from 'react';
 
 export interface StreamState {
@@ -61,24 +62,17 @@ export function useAssistantStream(token: string | null) {
 
           buffer += value;
 
-          // SSE frames are separated by a blank line; a frame may arrive
-          // split across chunks, so only whole frames are consumed.
-          const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+          const scanned = scanFrames(buffer);
+          buffer = scanned.rest;
 
-          for (const frame of frames) {
-            const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim() ?? 'message';
-            const data = frame
-              .split('\n')
-              .filter((line) => line.startsWith('data:'))
-              .map((line) => line.slice(5).trim())
-              .join('\n');
+          for (const { event, data } of scanned.frames) {
+            const parsed = parsePayload(data);
 
-            if (!data) {
+            // A truncated or malformed frame costs one token, not the
+            // whole answer.
+            if (!parsed) {
               continue;
             }
-
-            const parsed = JSON.parse(data) as { text?: string; message?: string };
 
             if (event === 'token' && parsed.text) {
               setState((previous) => ({ ...previous, answer: previous.answer + parsed.text }));
