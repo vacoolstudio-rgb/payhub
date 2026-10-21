@@ -206,8 +206,15 @@ export class KafkaConsumerService implements OnApplicationBootstrap, OnApplicati
         topics: missing.map((spec) => ({
           topic: spec.topic,
           numPartitions: PARTITIONS,
-          replicationFactor: 1,
-          configEntries: [{ name: 'retention.ms', value: String(spec.retentionMs) }],
+          // See the note in KafkaProducerService: with one replica
+          // `acks: all` is `acks: 1`, so durability is this number.
+          replicationFactor: this.config.replicationFactor,
+          configEntries: [
+            { name: 'retention.ms', value: String(spec.retentionMs) },
+            ...(this.config.minInsyncReplicas > 1
+              ? [{ name: 'min.insync.replicas', value: String(this.config.minInsyncReplicas) }]
+              : []),
+          ],
         })),
       });
 

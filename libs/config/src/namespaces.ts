@@ -79,6 +79,12 @@ export const kafkaConfig = registerAs('kafka', () => {
     saslPassword: env.KAFKA_SASL_PASSWORD,
     topicPrefix: env.KAFKA_TOPIC_PREFIX,
     maxDeliveryAttempts: env.KAFKA_MAX_DELIVERY_ATTEMPTS,
+    replicationFactor: env.KAFKA_REPLICATION_FACTOR,
+    // One short of the replica count: a three-broker cluster stays
+    // writable with one broker down, and a write that only one replica
+    // holds is still refused.
+    minInsyncReplicas:
+      env.KAFKA_MIN_INSYNC_REPLICAS ?? Math.max(1, env.KAFKA_REPLICATION_FACTOR - 1),
   } as const;
 });
 

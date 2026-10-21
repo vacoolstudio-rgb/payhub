@@ -80,6 +80,20 @@ export const envSchema = z
     KAFKA_SASL_PASSWORD: z.string().optional(),
     KAFKA_TOPIC_PREFIX: z.string().default('payhub'),
     KAFKA_MAX_DELIVERY_ATTEMPTS: positiveInt.default(5),
+    /**
+     * Copies of every record. One is right for a single-broker machine
+     * and wrong everywhere else: with a single replica `acks: all` is
+     * identical to `acks: 1`, so one lost disk destroys an event the
+     * outbox has already marked delivered.
+     */
+    KAFKA_REPLICATION_FACTOR: positiveInt.default(1),
+    /**
+     * How many replicas must acknowledge before a write counts. Left
+     * unset it is derived as `replicationFactor - 1`, which keeps a
+     * three-broker cluster writable while one broker is down and still
+     * refuses to accept a write that only one replica holds.
+     */
+    KAFKA_MIN_INSYNC_REPLICAS: positiveInt.optional(),
 
     // ---- grpc --------------------------------------------------------------
     GRPC_LISTEN_URL: z.string().min(1).default('0.0.0.0:50051'),
@@ -132,6 +146,18 @@ export const envSchema = z
         message: 'ANTHROPIC_API_KEY is required when LLM_ENABLED=true',
       });
     }
+    if (
+      env.KAFKA_MIN_INSYNC_REPLICAS !== undefined &&
+      env.KAFKA_MIN_INSYNC_REPLICAS > env.KAFKA_REPLICATION_FACTOR
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['KAFKA_MIN_INSYNC_REPLICAS'],
+        message:
+          'KAFKA_MIN_INSYNC_REPLICAS cannot exceed KAFKA_REPLICATION_FACTOR — every write would be rejected',
+      });
+    }
+
     if (env.KAFKA_SASL_MECHANISM !== 'none' && !(env.KAFKA_SASL_USERNAME && env.KAFKA_SASL_PASSWORD)) {
       ctx.addIssue({
         code: 'custom',

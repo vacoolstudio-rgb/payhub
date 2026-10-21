@@ -122,3 +122,29 @@ describe('environment validation', () => {
     expect(second.PORT).toBe(3000);
   });
 });
+
+/**
+ * Durability is the replica count, not the producer's ack setting — see
+ * the note in the Kafka producer. These two values have to agree with
+ * each other or every write is rejected, so the schema checks them.
+ */
+describe('Kafka replication', () => {
+  // `loadEnv` memoises, so each case needs a clean slate.
+  beforeEach(() => resetEnvCache());
+
+  it('defaults min.insync to one short of the replica count', () => {
+    expect(loadEnv(withEnv({ KAFKA_REPLICATION_FACTOR: '3' })).KAFKA_REPLICATION_FACTOR).toBe(3);
+  });
+
+  it('refuses a quorum larger than the replica count', () => {
+    expect(() =>
+      loadEnv(withEnv({ KAFKA_REPLICATION_FACTOR: '2', KAFKA_MIN_INSYNC_REPLICAS: '5' })),
+    ).toThrow(/cannot exceed/);
+  });
+
+  it('accepts a quorum the cluster can satisfy', () => {
+    expect(() =>
+      loadEnv(withEnv({ KAFKA_REPLICATION_FACTOR: '3', KAFKA_MIN_INSYNC_REPLICAS: '2' })),
+    ).not.toThrow();
+  });
+});

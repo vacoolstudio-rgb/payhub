@@ -12,8 +12,15 @@ function envelopeOf(message: Message): Record<string, unknown> {
   return JSON.parse(String(message.value)) as Record<string, unknown>;
 }
 
-function build(clsCorrelationId?: string) {
+interface CreatedTopic {
+  topic: string;
+  replicationFactor: number;
+  configEntries?: Array<{ name: string; value: string }>;
+}
+
+function build(clsCorrelationId?: string, replication = { replicationFactor: 1, minInsyncReplicas: 1 }) {
   const sent: SentBatch[] = [];
+  const created: CreatedTopic[] = [];
 
   const producer = {
     connect: vi.fn(),
@@ -21,13 +28,21 @@ function build(clsCorrelationId?: string) {
     sendBatch: vi.fn(async (batch: SentBatch) => void sent.push(batch)),
   };
 
+  const admin = {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    listTopics: vi.fn(async () => [] as string[]),
+    createTopics: vi.fn(async ({ topics }: { topics: CreatedTopic[] }) => void created.push(...topics)),
+  };
+
   const service = new KafkaProducerService(
-    { kafka: { producer: () => producer, admin: () => ({}) } } as never,
+    { kafka: { producer: () => producer, admin: () => admin } } as never,
     {
       isActive: () => clsCorrelationId !== undefined,
       get: () => clsCorrelationId,
     } as never,
     { serviceName: 'payhub-test', isProduction: false } as never,
+    replication as never,
   );
 
   // `onModuleInit` would connect to a broker; the batch builder is what is
@@ -37,7 +52,7 @@ function build(clsCorrelationId?: string) {
 
   const messages = () => sent.flatMap((batch) => batch.topicMessages.flatMap((t) => t.messages));
 
-  return { service, messages };
+  return { service, messages, created };
 }
 
 const input = (overrides: Record<string, unknown> = {}) => ({
@@ -135,5 +150,44 @@ describe('KafkaProducerService: correlation', () => {
     await probe.service.publishBatch([input({ aggregateId: 'payment-7' })]);
 
     expect(probe.messages()[0]!.key).toBe('payment-7');
+  });
+});
+
+/**
+ * Durability is the replica count, not the ack setting.
+ *
+ * The factor was hardcoded to 1 beside a comment explaining that
+ * `acks: all` stops a broker failover losing an event. With one replica
+ * there is one in-sync replica, so `acks: all` is `acks: 1` and a single
+ * lost disk destroys a record the outbox has already marked published.
+ */
+describe('KafkaProducerService: topic durability', () => {
+  const provision = async (replication: { replicationFactor: number; minInsyncReplicas: number }) => {
+    const probe = build(undefined, replication);
+    await probe.service.onModuleInit();
+    return probe.created;
+  };
+
+  it('creates topics with the configured replication factor', async () => {
+    const created = await provision({ replicationFactor: 3, minInsyncReplicas: 2 });
+
+    expect(created).not.toHaveLength(0);
+    expect(created.every((t) => t.replicationFactor === 3)).toBe(true);
+  });
+
+  it('requires a quorum of replicas to acknowledge a write', async () => {
+    const created = await provision({ replicationFactor: 3, minInsyncReplicas: 2 });
+
+    expect(created[0]?.configEntries).toContainEqual({
+      name: 'min.insync.replicas',
+      value: '2',
+    });
+  });
+
+  /** On a one-broker machine the setting is noise, and Kafka rejects it. */
+  it('omits min.insync.replicas when there is only one replica', async () => {
+    const created = await provision({ replicationFactor: 1, minInsyncReplicas: 1 });
+
+    expect(created[0]?.configEntries ?? []).toHaveLength(0);
   });
 });

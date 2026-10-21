@@ -8,7 +8,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import type { Message, Producer } from 'kafkajs';
 import { ClsService } from 'nestjs-cls';
-import { type AppConfig, appConfig } from '@payhub/config';
+import { type AppConfig, type KafkaConfig, appConfig, kafkaConfig } from '@payhub/config';
 import { DependencyFailureError } from '@payhub/kernel';
 import {
   type IntegrationEventEnvelope,
@@ -53,6 +53,7 @@ export class KafkaProducerService implements OnModuleInit, OnApplicationShutdown
     private readonly client: KafkaClientProvider,
     private readonly cls: ClsService<PayHubClsStore>,
     @Inject(appConfig.KEY) private readonly app: AppConfig,
+    @Inject(kafkaConfig.KEY) private readonly config: KafkaConfig,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -88,10 +89,22 @@ export class KafkaProducerService implements OnModuleInit, OnApplicationShutdown
       if (missing.length > 0) {
         await admin.createTopics({
           waitForLeaders: true,
+        /**
+         * Durability is the replica count, not the ack setting.
+         *
+         * This was hardcoded to 1 beside a comment explaining that
+         * `acks: all` protects against a broker failover losing an
+         * event. With one replica there is one in-sync replica, so
+         * `acks: all` means `acks: 1` and a single lost disk destroys a
+         * record the outbox has already marked published. The default
+         * stays 1 because a one-broker machine cannot create anything
+         * else; production sets it.
+         */
           topics: missing.map((topic) => ({
             topic,
             numPartitions: 3,
-            replicationFactor: 1,
+            replicationFactor: this.config.replicationFactor,
+            configEntries: minInsyncEntries(this.config.minInsyncReplicas),
           })),
         });
         this.logger.log(`Created ${missing.length} topic(s): ${missing.join(', ')}`);
@@ -226,4 +239,13 @@ function headerValue(
 ): string | undefined {
   const value = headers?.[name];
   return value !== undefined && value !== '' ? value : undefined;
+}
+
+/**
+ * `min.insync.replicas` only when there is more than one replica: set to
+ * 1 on a single-broker cluster it is noise, and Kafka rejects a value
+ * above the replica count on every write.
+ */
+function minInsyncEntries(minInsync: number): Array<{ name: string; value: string }> {
+  return minInsync > 1 ? [{ name: 'min.insync.replicas', value: String(minInsync) }] : [];
 }

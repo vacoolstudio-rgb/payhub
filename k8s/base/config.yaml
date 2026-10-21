@@ -16,6 +16,14 @@ data:
   KAFKA_BROKERS: kafka-0.kafka.payhub:9092,kafka-1.kafka.payhub:9092,kafka-2.kafka.payhub:9092
   KAFKA_CLIENT_ID: payhub
   KAFKA_TOPIC_PREFIX: payhub
+  # Three copies of every record, two of which must acknowledge a write.
+  # Durability is this number, not the producer's `acks` setting: with a
+  # single replica `acks: all` is `acks: 1`, and losing one disk destroys
+  # an event the outbox has already marked delivered. Two in-sync keeps
+  # the cluster writable through one broker going down while still
+  # refusing a write that only one replica holds.
+  KAFKA_REPLICATION_FACTOR: "3"
+  KAFKA_MIN_INSYNC_REPLICAS: "2"
   LEDGER_GRPC_URL: payhub-ledger.payhub:50051
 
   DATABASE_POOL_MIN: "2"
