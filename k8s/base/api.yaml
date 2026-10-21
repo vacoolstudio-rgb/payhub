@@ -71,6 +71,28 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.labels['app.kubernetes.io/version']
+            - name: DATABASE_POOL_MAX
+              # Pool size is a shared budget, not a per-service preference.
+              #
+              # Postgres allows 200 connections. Worst case here is every
+              # deployment at its ceiling during a rollout: api 12 (HPA max)
+              # + 1 surge, ledger 3 + 1, worker 2 + 1 — twenty pods. At the
+              # ConfigMap default of 20 each that is 400 connections against
+              # a limit of 200, so the autoscaler would take the database
+              # down under exactly the load that triggered it, and the pods
+              # already running would lose their next connection too.
+              #
+              # Allowing 25 for migrations, operator psql and monitoring
+              # leaves 175: api 13x6=78, ledger 4x10=40, worker 3x10=30,
+              # for 148. Re-do this arithmetic when a replica count moves.
+              #
+              # Beyond this a connection pooler is the real answer, not a
+              # bigger number — each backend costs memory and a scheduler
+              # slot. PgBouncer in transaction mode would need an audit of
+              # the session-scoped advisory lock in AdvisoryLockService
+              # first; the _xact_ variant used by the crons is already safe.
+              # This service: mostly cached reads and short writes; Node awaits each query, so six in flight per pod is already plenty.
+              value: "6"
           envFrom:
             - configMapRef:
                 name: payhub-config

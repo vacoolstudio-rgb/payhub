@@ -43,6 +43,16 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Production dependencies only. The dev tree carries advisories in
+      # build tooling — glob expansion in tsc-alias, the Vite dev server's
+      # Windows editor launcher — whose exploit paths require control of
+      # our own build inputs, and clearing them needs major bumps of the
+      # two packages the build depends on most. That is a worse trade than
+      # the advisory, so the gate is drawn where shipped code lives: a
+      # vulnerability that reaches a container fails the build.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Typecheck
         run: npm run typecheck
 

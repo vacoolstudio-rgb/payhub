@@ -53,6 +53,12 @@ spec:
               value: 0.0.0.0:50051
             - name: DATABASE_RUN_MIGRATIONS
               value: "false"
+            # Pool size comes from a shared budget — see the full
+            # arithmetic in api.yaml. Twenty pods at the ConfigMap default
+            # of 20 would ask Postgres for 400 connections against a limit
+            # of 200.
+            # This service: the heaviest transactional work: FOR UPDATE on wallets, journal appends.
+            - { name: DATABASE_POOL_MAX, value: "10" }
           envFrom:
             - configMapRef: { name: payhub-config }
             - secretRef: { name: payhub-secrets }

@@ -19,10 +19,17 @@ data:
   LEDGER_GRPC_URL: payhub-ledger.payhub:50051
 
   DATABASE_POOL_MIN: "2"
-  # Per pod. With 4 API replicas that is 80 connections, so the Postgres
-  # `max_connections` (or the PgBouncer pool) has to be sized for it —
-  # exhausting the database from the application side is a classic outage.
-  DATABASE_POOL_MAX: "20"
+  # A deliberately small fallback. Every deployment overrides this with a
+  # share of a budget worked out against `max_connections` — the
+  # arithmetic lives in api.yaml, next to the service with the autoscaler.
+  #
+  # This used to be 20 for everyone, under a comment that named the risk
+  # ("exhausting the database from the application side is a classic
+  # outage") without doing the sum: at the API's HPA ceiling that was 400
+  # connections against a limit of 200. Anything landing here without an
+  # override now gets a share too small to hurt rather than one that
+  # silently fits until the autoscaler fires.
+  DATABASE_POOL_MAX: "5"
   DATABASE_STATEMENT_TIMEOUT_MS: "10000"
   DATABASE_LOCK_TIMEOUT_MS: "5000"
 
