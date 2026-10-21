@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { QueryBus } from '@nestjs/cqrs';
 import { createHash } from 'node:crypto';
+import { type LlmConfig, llmConfig } from '@payhub/config';
+import { DependencyFailureError } from '@payhub/kernel';
 import { CacheService } from '@payhub/redis';
 import { ListPayments } from '../../payment/application/queries/payment.queries.js';
 import type { PaymentView } from '../../payment/application/payment.view.js';
@@ -54,12 +56,31 @@ export class AssistantService {
   ].join('\n');
 
   constructor(
+    @Inject(llmConfig.KEY) private readonly config: LlmConfig,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     private readonly budget: TokenBudgetService,
     private readonly queries: QueryBus,
     private readonly wallets: WalletReadService,
     private readonly cache: CacheService,
   ) {}
+
+  /**
+   * Refuses every entry point while the feature is switched off.
+   *
+   * `LLM_ENABLED` was read into the config and then by nobody. With the
+   * flag false and no key, the endpoints still accepted requests, still
+   * spent throttle budget, and failed with a 500 from the SDK calling
+   * Anthropic with an empty string — an internal error for a deliberate
+   * operator decision. A flag that does not gate the thing it names is
+   * just a comment.
+   */
+  private assertEnabled(): void {
+    if (!this.config.enabled) {
+      throw new DependencyFailureError('llm', 'The assistant is switched off', {
+        retryable: false,
+      });
+    }
+  }
 
   /**
    * Non-streaming answer with a response cache.
@@ -70,6 +91,8 @@ export class AssistantService {
    * old answer is no longer reachable.
    */
   async ask(input: AskInput): Promise<{ answer: string; cached: boolean; remainingTokens: number }> {
+    this.assertEnabled();
+
     const context = await this.buildContext(input.userId);
     const messages = this.buildMessages(input, context);
 
@@ -116,6 +139,8 @@ export class AssistantService {
    * still cost tokens, and still gets charged.
    */
   async *askStream(input: AskInput): AsyncIterable<LlmStreamChunk> {
+    this.assertEnabled();
+
     const context = await this.buildContext(input.userId);
     const messages = this.buildMessages(input, context);
     const system = AssistantService.SYSTEM_PROMPT + context;
@@ -145,6 +170,8 @@ export class AssistantService {
    * merchants we already know.
    */
   async categoriseSpending(userId: string, days = 30): Promise<SpendCategory[]> {
+    this.assertEnabled();
+
     const page = await this.queries.execute<
       ListPayments,
       { items: PaymentView[]; nextCursor: string | null; hasMore: boolean }

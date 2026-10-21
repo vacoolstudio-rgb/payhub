@@ -132,7 +132,7 @@ export const envSchema = z
     ANTHROPIC_API_KEY: z.string().optional(),
     LLM_MODEL: z.string().default('claude-sonnet-5'),
     LLM_MAX_OUTPUT_TOKENS: positiveInt.default(1_024),
-    LLM_REQUEST_TIMEOUT_MS: positiveInt.default(60_000),
+    LLM_REQUEST_TIMEOUT_MS: positiveInt.default(25_000),
     LLM_USER_RPM: positiveInt.default(10),
     LLM_USER_DAILY_TOKEN_BUDGET: positiveInt.default(100_000),
     LLM_CACHE_TTL_SEC: positiveInt.default(300),
@@ -146,6 +146,16 @@ export const envSchema = z
         message: 'ANTHROPIC_API_KEY is required when LLM_ENABLED=true',
       });
     }
+    if (env.LLM_REQUEST_TIMEOUT_MS >= env.REQUEST_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LLM_REQUEST_TIMEOUT_MS'],
+        message:
+          'LLM_REQUEST_TIMEOUT_MS must be below REQUEST_TIMEOUT_MS: the inner call has to fail first, ' +
+          'or the HTTP layer abandons a request the provider keeps billing for',
+      });
+    }
+
     if (
       env.KAFKA_MIN_INSYNC_REPLICAS !== undefined &&
       env.KAFKA_MIN_INSYNC_REPLICAS > env.KAFKA_REPLICATION_FACTOR

@@ -156,8 +156,21 @@ export class AnthropicProvider implements LlmProvider {
     return response.input_tokens;
   }
 
+  /**
+   * Retries bounded by a deadline, not just by a count.
+   *
+   * `maxRetries` alone multiplies the per-attempt timeout: four attempts
+   * at a 60-second SDK timeout, plus backoff, is over four minutes of
+   * provider work — every second of it billed — behind a caller the
+   * global 30-second request budget gave up on long before. The retry
+   * loop has to know when the answer stops being wanted.
+   *
+   * The budget covers the whole operation, so an attempt that would
+   * start past it is not started at all.
+   */
   private async withRetries<T>(operation: () => Promise<T>): Promise<T> {
     let lastError: unknown;
+    const deadline = Date.now() + this.config.requestTimeoutMs;
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt += 1) {
       try {
@@ -166,7 +179,15 @@ export class AnthropicProvider implements LlmProvider {
         lastError = error;
         const classified = this.classify(error);
 
-        if (!classified.retryable || attempt === this.config.maxRetries) {
+        const waitMs = classified.retryAfterMs ?? backoffDelay(attempt, 500, 20_000);
+        const outOfTime = Date.now() + waitMs >= deadline;
+
+        if (!classified.retryable || attempt === this.config.maxRetries || outOfTime) {
+          if (outOfTime && classified.retryable) {
+            this.logger.warn(
+              `LLM budget of ${this.config.requestTimeoutMs}ms spent after ${attempt + 1} attempt(s); not retrying`,
+            );
+          }
           throw classified.retryAfterMs !== undefined
             ? new RateLimitedError(classified.message, classified.retryAfterMs)
             : new DependencyFailureError('anthropic', classified.message, {
@@ -175,7 +196,6 @@ export class AnthropicProvider implements LlmProvider {
               });
         }
 
-        const waitMs = classified.retryAfterMs ?? backoffDelay(attempt, 500, 20_000);
         this.logger.warn(`LLM retry ${attempt + 1} in ${waitMs}ms: ${classified.message}`);
         await delay(waitMs);
       }
