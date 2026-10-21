@@ -43,12 +43,25 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { memory: 512Mi }
+          # Three questions, three endpoints — the same split the API
+          # uses. Readiness pointed at `/health/live`, which deliberately
+          # touches no dependency, so the pod reported ready with Redis
+          # down. And with no startup probe the liveness check began
+          # counting immediately: a Kafka consumer joining a group during
+          # a rebalance can take longer than 3 x 15s and be killed
+          # mid-boot, over and over.
+          startupProbe:
+            httpGet: { path: /health/startup, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet: { path: /health/live, port: http }
             periodSeconds: 15
+            failureThreshold: 3
           readinessProbe:
-            httpGet: { path: /health/live, port: http }
+            httpGet: { path: /health/ready, port: http }
             periodSeconds: 10
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

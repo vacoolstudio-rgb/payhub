@@ -92,10 +92,29 @@ services:
       - everysec
       - --maxmemory
       - 512mb
-      # Locks and idempotency keys must not be evicted at random, so only
-      # keys with a TTL are candidates.
+      # `noeviction`, and the previous setting was backwards.
+      #
+      # It was `volatile-lru`, under a comment saying locks and idempotency
+      # keys must not be evicted. But those are set with `EX` — every one
+      # of them has a TTL, which makes them precisely the candidates
+      # `volatile-lru` picks. What it protected instead was the data with
+      # no TTL: BullMQ's job hashes, which is why BullMQ prints
+      # "Eviction policy is volatile-lru. It should be noeviction" on
+      # every worker boot.
+      #
+      # One instance here serves a cache (eviction is fine), a rate
+      # limiter and locks (TTL-bounded), idempotency records and a job
+      # queue (losing one silently is a lost payout). Those requirements
+      # conflict, and the only setting safe for the strictest of them is
+      # `noeviction`: memory stays bounded by the TTLs and by BullMQ's
+      # `removeOnComplete`/`removeOnFail` retention, and if it ever does
+      # fill, writes fail loudly instead of a queued webhook disappearing.
+      #
+      # In production these belong on separate instances — cache with
+      # `allkeys-lru`, queue with `noeviction` — so the cache can grow
+      # without threatening the queue.
       - --maxmemory-policy
-      - volatile-lru
+      - noeviction
     ports: ["6379:6379"]
     volumes:
       - redis_data:/data

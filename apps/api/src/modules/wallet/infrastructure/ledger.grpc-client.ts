@@ -9,6 +9,9 @@ import type { PayHubClsStore } from '@payhub/shared';
 
 export const LEDGER_GRPC_CLIENT = Symbol.for('payhub:LedgerGrpcClient');
 
+/** How long the local backstop waits past the deadline before giving up. */
+const GRACE_MS = 500;
+
 interface MoneyMessage {
   amountMinor: string;
   currency: string;
@@ -36,12 +39,22 @@ export interface StatementRowMessage {
   paymentId: string;
 }
 
+/**
+ * Nest forwards every argument straight to the grpc-js client method, whose
+ * unary signature is `(request, metadata, options, callback)` — so the third
+ * parameter is where a real deadline goes.
+ */
+interface CallOptions {
+  deadline: Date;
+}
+
 interface LedgerServiceClient {
-  getBalances(request: { userId: string }, metadata?: Metadata): unknown;
-  getWallet(request: { walletId: string }, metadata?: Metadata): unknown;
+  getBalances(request: { userId: string }, metadata?: Metadata, options?: CallOptions): unknown;
+  getWallet(request: { walletId: string }, metadata?: Metadata, options?: CallOptions): unknown;
   getStatement(
     request: { userId: string; currency?: string; limit?: number; cursor?: string },
     metadata?: Metadata,
+    options?: CallOptions,
   ): unknown;
 }
 
@@ -73,13 +86,15 @@ export class LedgerGrpcClient implements OnModuleInit {
 
   async getBalances(userId: string): Promise<WalletMessage[]> {
     const response = await this.call<{ wallets?: WalletMessage[] }>(() =>
-      this.service.getBalances({ userId }, this.metadata()),
+      this.service.getBalances({ userId }, this.metadata(), this.callOptions()),
     );
     return response.wallets ?? [];
   }
 
   async getWallet(walletId: string): Promise<WalletMessage> {
-    return this.call<WalletMessage>(() => this.service.getWallet({ walletId }, this.metadata()));
+    return this.call<WalletMessage>(() =>
+      this.service.getWallet({ walletId }, this.metadata(), this.callOptions()),
+    );
   }
 
   async getStatement(input: {
@@ -88,7 +103,29 @@ export class LedgerGrpcClient implements OnModuleInit {
     limit?: number;
     cursor?: string;
   }): Promise<{ rows: StatementRowMessage[]; nextCursor: string; hasMore: boolean }> {
-    return this.call(() => this.service.getStatement(input, this.metadata()));
+    return this.call(() => this.service.getStatement(input, this.metadata(), this.callOptions()));
+  }
+
+  /**
+   * A real gRPC deadline, not a local timer.
+   *
+   * This used to rely on RxJS `timeout()` alone, under a comment claiming
+   * the deadline propagated to the server. It did not: the client gave up
+   * while the ledger kept working on a request nobody was waiting for,
+   * still holding its database connection. Three things change with an
+   * actual deadline:
+   *
+   * - it travels in the `grpc-timeout` header, so the server knows the
+   *   budget from the first byte and can pass it to its own downstream
+   *   calls;
+   * - grpc-js enforces it on the HTTP/2 layer rather than through a
+   *   JavaScript timer, so it still fires when the event loop is busy —
+   *   which is precisely when a timeout matters;
+   * - it fails with `DEADLINE_EXCEEDED`, a code the retry classification
+   *   below already understands, instead of an RxJS error with no code.
+   */
+  private callOptions(): CallOptions {
+    return { deadline: new Date(Date.now() + this.config.deadlineMs) };
   }
 
   private metadata(): Metadata {
@@ -103,7 +140,12 @@ export class LedgerGrpcClient implements OnModuleInit {
   private async call<T>(invoke: () => unknown): Promise<T> {
     try {
       return await firstValueFrom(
-        (invoke() as import('rxjs').Observable<T>).pipe(timeout(this.config.deadlineMs)),
+        // The deadline above is the real bound. This is a backstop a little
+        // beyond it, for the case where the call never resolves at all —
+        // unsubscribing cancels the underlying stream.
+        (invoke() as import('rxjs').Observable<T>).pipe(
+          timeout(this.config.deadlineMs + GRACE_MS),
+        ),
       );
     } catch (error) {
       const code = (error as { code?: number }).code;
