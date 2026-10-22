@@ -116,7 +116,7 @@ export const envSchema = z
     THROTTLE_TTL_MS: positiveInt.default(60_000),
     THROTTLE_LIMIT: positiveInt.default(120),
     IDEMPOTENCY_TTL_SEC: positiveInt.default(86_400),
-    IDEMPOTENCY_LOCK_TTL_MS: positiveInt.default(30_000),
+    IDEMPOTENCY_LOCK_TTL_MS: positiveInt.default(45_000),
 
     // ---- outbox, webhooks, reconciliation ---------------------------------
     OUTBOX_POLL_INTERVAL_MS: positiveInt.default(500),
@@ -146,6 +146,16 @@ export const envSchema = z
         message: 'ANTHROPIC_API_KEY is required when LLM_ENABLED=true',
       });
     }
+    if (env.IDEMPOTENCY_LOCK_TTL_MS <= env.REQUEST_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['IDEMPOTENCY_LOCK_TTL_MS'],
+        message:
+          'IDEMPOTENCY_LOCK_TTL_MS must outlive REQUEST_TIMEOUT_MS: a lock that expires while its ' +
+          'request is still finishing lets a retry start the same payment twice',
+      });
+    }
+
     if (env.LLM_REQUEST_TIMEOUT_MS >= env.REQUEST_TIMEOUT_MS) {
       ctx.addIssue({
         code: 'custom',

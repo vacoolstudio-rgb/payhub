@@ -148,3 +148,41 @@ describe('Kafka replication', () => {
     ).not.toThrow();
   });
 });
+
+/**
+ * Timeouts only mean anything in relation to each other. Each of these
+ * pairs was wrong in the codebase at some point, and in both cases the
+ * individual values looked perfectly reasonable on their own.
+ */
+describe('timeout nesting', () => {
+  beforeEach(() => resetEnvCache());
+
+  it('refuses an LLM budget at or above the request budget', () => {
+    expect(() =>
+      loadEnv(withEnv({ REQUEST_TIMEOUT_MS: '30000', LLM_REQUEST_TIMEOUT_MS: '30000' })),
+    ).toThrow(/LLM_REQUEST_TIMEOUT_MS/);
+  });
+
+  /**
+   * Equal is not safe: the handler keeps running after the interceptor
+   * stops waiting, so a lock expiring at the same instant lets a retry
+   * start the same payment again.
+   */
+  it('refuses an idempotency lock that expires with the request', () => {
+    expect(() =>
+      loadEnv(withEnv({ REQUEST_TIMEOUT_MS: '30000', IDEMPOTENCY_LOCK_TTL_MS: '30000' })),
+    ).toThrow(/IDEMPOTENCY_LOCK_TTL_MS/);
+  });
+
+  it('accepts a correctly nested set', () => {
+    expect(() =>
+      loadEnv(
+        withEnv({
+          REQUEST_TIMEOUT_MS: '30000',
+          LLM_REQUEST_TIMEOUT_MS: '25000',
+          IDEMPOTENCY_LOCK_TTL_MS: '45000',
+        }),
+      ),
+    ).not.toThrow();
+  });
+});

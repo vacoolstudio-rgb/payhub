@@ -41,6 +41,7 @@ describe('AnthropicProvider: retry budget', () => {
 
   beforeEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('returns the first successful attempt without retrying', async () => {
@@ -63,17 +64,32 @@ describe('AnthropicProvider: retry budget', () => {
   });
 
   /**
-   * The regression. With a budget smaller than the first backoff, the
+   * The regression. With a budget smaller than the next backoff, the
    * loop used to keep going for `maxRetries` regardless — each attempt
    * billed, none of them wanted.
+   *
+   * The backoff is full jitter, uniform in [0, 500) on the first
+   * attempt, so this needs a fixed draw: written against the nominal
+   * 500ms the test passed alone and failed in a full run, which is the
+   * worst way for a test to be wrong.
    */
   it('stops retrying once the budget is spent', async () => {
-    // Backoff starts at 500ms, so a 50ms budget is gone before attempt two.
+    vi.spyOn(Math, 'random').mockReturnValue(0.99); // ~495ms, past a 50ms budget
     const provider = new AnthropicProvider(config({ maxRetries: 5, requestTimeoutMs: 50 }));
     const operation = vi.fn().mockRejectedValue(retryableFailure());
 
     await expect(retryWith(provider, operation)).rejects.toThrow();
     expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  /** The same budget still allows a retry the backoff happens to fit. */
+  it('retries when the backoff lands inside the budget', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0); // no wait at all
+    const provider = new AnthropicProvider(config({ maxRetries: 1, requestTimeoutMs: 50 }));
+    const operation = vi.fn().mockRejectedValue(retryableFailure());
+
+    await expect(retryWith(provider, operation)).rejects.toThrow();
+    expect(operation).toHaveBeenCalledTimes(2);
   });
 
   it('still honours maxRetries when the budget is generous', async () => {
