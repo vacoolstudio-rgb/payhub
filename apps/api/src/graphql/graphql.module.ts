@@ -1,4 +1,4 @@
-import { BadRequestException, Module } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Module } from '@nestjs/common';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
 import { GraphQLModule as NestGraphQLModule } from '@nestjs/graphql';
 import { GraphQLError, type GraphQLFormattedError } from 'graphql';
@@ -12,7 +12,7 @@ import { WalletModule } from '../modules/wallet/wallet.module.js';
 import { LoaderFactory } from './loaders/graphql.loaders.js';
 import { GraphqlLoadersModule } from './loaders/loaders.module.js';
 import { DashboardResolver } from './resolvers/dashboard.resolver.js';
-import { depthLimitPlugin } from './plugins/depth-limit.plugin.js';
+import { queryCostPlugin } from './plugins/query-cost.plugin.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +34,8 @@ const here = dirname(fileURLToPath(import.meta.url));
  * the server, and none of them carry anything internal.
  */
 const CLIENT_FAULT_CODES = new Set([
+  'QUERY_TOO_DEEP',
+  'QUERY_TOO_EXPENSIVE',
   'GRAPHQL_PARSE_FAILED',
   'GRAPHQL_VALIDATION_FAILED',
   'BAD_USER_INPUT',
@@ -93,7 +95,10 @@ function validationMessages(exception: BadRequestException): string[] {
           res,
           loaders: loaders.create(),
         }),
-        plugins: [depthLimitPlugin(8)],
+        // Depth alone left the door open: aliased root fields are all at
+        // depth one, so fifty aggregates in one query passed cleanly. Cost
+        // prices each field by what serving it actually involves.
+        plugins: [queryCostPlugin({ maxDepth: 8, maxCost: 500 })],
         formatError: (formatted: GraphQLFormattedError, error: unknown): GraphQLFormattedError => {
           const original = error instanceof GraphQLError ? error.originalError : error;
 
@@ -115,6 +120,28 @@ function validationMessages(exception: BadRequestException): string[] {
             return {
               message: 'Argument validation failed',
               extensions: { code: 'BAD_USER_INPUT', validation: validationMessages(original) },
+            };
+          }
+
+          /**
+           * Any 4xx is the caller's, and must keep its meaning.
+           *
+           * A rate limit arrived here as a plain `ThrottlerException` and
+           * fell through to the catch-all, so exceeding a quota was
+           * reported as `INTERNAL_SERVER_ERROR` — and in production would
+           * have been flattened to "Internal server error", telling an
+           * integrator to retry the one thing they should back off from.
+           */
+          if (original instanceof HttpException && original.getStatus() < 500) {
+            return {
+              message: original.message,
+              extensions: {
+                code:
+                  original.getStatus() === HttpStatus.TOO_MANY_REQUESTS
+                    ? 'RATE_LIMITED'
+                    : 'BAD_USER_INPUT',
+                status: original.getStatus(),
+              },
             };
           }
 
