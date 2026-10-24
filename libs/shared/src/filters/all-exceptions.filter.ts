@@ -14,6 +14,7 @@ import { QueryFailedError } from 'typeorm';
 import type { PayHubClsStore } from '../types/request-context.js';
 import {
   PROBLEM_BASE_URI,
+  humanize,
   type ProblemDetails,
   problemFromDomainError,
 } from '../http/problem-details.js';
@@ -73,7 +74,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     if (exception instanceof HttpException) {
-      return fromHttpException(exception, base);
+      return toProblemFromHttpException(exception, base);
     }
 
     const pgProblem = fromPostgresError(exception, base);
@@ -107,7 +108,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 }
 
-function fromHttpException(
+export function toProblemFromHttpException(
   exception: HttpException,
   base: { instance?: string | undefined; correlationId?: string | undefined },
 ): ProblemDetails {
@@ -120,16 +121,27 @@ function fromHttpException(
   // Nest puts arbitrary shapes in an HttpException body, so each field is
   // narrowed before it is rendered — `String({})` is "[object Object]",
   // which is a terrible thing to send a client as an error title.
-  const title = asString(payload['error']) ?? exception.name;
+  const code = asString(payload['code']) ?? httpStatusToCode(status);
+  const title = asString(payload['error']) ?? humanize(code);
 
   return {
-    type: `${PROBLEM_BASE_URI}/${title.toLowerCase().replace(/\s+/g, '-')}`,
+    // Built from `code`, never from the class name. `type` is the stable,
+    // machine-readable half of RFC 7807 — the part a client branches on —
+    // and the fallback used to mint it from `exception.name`, so a rate
+    // limit went out as `errors/throttlerexception`, titled
+    // "ThrottlerException". That URI is a published contract tied to a
+    // class name inside @nestjs/throttler: it names our dependency to
+    // every caller and changes if the library renames anything.
+    type: `${PROBLEM_BASE_URI}/${code.toLowerCase().replace(/_/g, '-')}`,
     title,
     status,
-    detail: Array.isArray(message)
-      ? message.map((item) => asString(item) ?? 'invalid value').join('; ')
-      : (asString(message) ?? exception.message),
-    code: asString(payload['code']) ?? httpStatusToCode(status),
+    detail: stripClassPrefix(
+      Array.isArray(message)
+        ? message.map((item) => asString(item) ?? 'invalid value').join('; ')
+        : (asString(message) ?? exception.message),
+      exception.name,
+    ),
+    code,
     ...base,
     timestamp: new Date().toISOString(),
     ...(Array.isArray(message) ? { errors: { validation: message } } : {}),
@@ -223,6 +235,17 @@ const STATUS_NAMES: ReadonlyMap<number, string> = new Map(
     .filter(([, value]) => typeof value === 'number')
     .map(([name, value]) => [value as number, name]),
 );
+
+/**
+ * Drops a leading `SomeException: ` from a message.
+ *
+ * Thrown exceptions outside our own code tend to prefix their own class
+ * name — `ThrottlerException: Too Many Requests` — and that prefix is
+ * noise to a caller and a small disclosure to anyone else.
+ */
+function stripClassPrefix(detail: string, name: string): string {
+  return detail.startsWith(`${name}: `) ? detail.slice(name.length + 2) : detail;
+}
 
 function httpStatusToCode(status: number): string {
   return STATUS_NAMES.get(status) ?? `HTTP_${status}`;

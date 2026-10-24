@@ -5,20 +5,25 @@ import type {
   MerchantPricing,
   MerchantPricingSnapshot,
 } from '../../domain/merchant-pricing.port.js';
+import type { MerchantAuthority } from '../../domain/merchant-authority.port.js';
 
 /**
  * Anti-corruption layer between the payment and merchant contexts.
  *
  * This is the only file in the payment module that knows the merchant
- * context exists. It translates `Merchant` into the two facts payments
- * care about and converts a merchant-context failure into a payment-context
+ * context exists. It translates `Merchant` into the facts payments care
+ * about and converts a merchant-context failure into a payment-context
  * failure, so `MerchantNotActive` does not leak upward as a surprise.
+ *
+ * It implements both narrow ports rather than letting a second class
+ * reach into the merchant context, which is what keeps that sentence
+ * true. The ports stay separate so callers depend on one question each.
  *
  * When the merchant context moves to its own service, this class swaps a
  * method call for a gRPC call and nothing else changes.
  */
 @Injectable()
-export class MerchantPricingAdapter implements MerchantPricing {
+export class MerchantContextAdapter implements MerchantPricing, MerchantAuthority {
   constructor(private readonly merchants: MerchantService) {}
 
   async resolve(
@@ -39,5 +44,11 @@ export class MerchantPricingAdapter implements MerchantPricing {
       feeFor: (amount: Money) => merchant.feePolicy.calculate(amount),
       webhookConfigured: merchant.webhook !== null,
     });
+  }
+
+  async mayActFor(merchantId: string, userId: string): Promise<boolean> {
+    const merchant = await this.merchants.loadAggregate(merchantId);
+
+    return merchant.ownerUserId === userId;
   }
 }

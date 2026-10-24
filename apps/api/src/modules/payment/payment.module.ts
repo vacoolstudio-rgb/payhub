@@ -13,9 +13,10 @@ import {
 } from './application/queries/payment.queries.js';
 import { PaymentSaga } from './application/sagas/payment.saga.js';
 import { MERCHANT_PRICING } from './domain/merchant-pricing.port.js';
+import { MERCHANT_AUTHORITY } from './domain/merchant-authority.port.js';
 import { PAYMENT_PROVIDER_REGISTRY } from './domain/payment-provider.port.js';
 import { PAYMENT_REPOSITORY } from './domain/payment.repository.js';
-import { MerchantPricingAdapter } from './infrastructure/acl/merchant-pricing.adapter.js';
+import { MerchantContextAdapter } from './infrastructure/acl/merchant-context.adapter.js';
 import { LedgerEventConsumer } from './infrastructure/messaging/ledger-event.consumer.js';
 import { TypeOrmPaymentRepository } from './infrastructure/persistence/repositories/typeorm-payment.repository.js';
 import { BankTransferProvider } from './infrastructure/providers/bank-transfer.provider.js';
@@ -76,7 +77,9 @@ const queryHandlers = [GetPaymentHandler, ListPaymentsHandler, GetPaymentStatsHa
 
     // Ports → adapters.
     { provide: PAYMENT_REPOSITORY, useClass: TypeOrmPaymentRepository },
-    { provide: MERCHANT_PRICING, useClass: MerchantPricingAdapter },
+    MerchantContextAdapter,
+    { provide: MERCHANT_PRICING, useExisting: MerchantContextAdapter },
+    { provide: MERCHANT_AUTHORITY, useExisting: MerchantContextAdapter },
   ],
   exports: [PAYMENT_REPOSITORY, PAYMENT_PROVIDER_REGISTRY, CqrsModule],
 })

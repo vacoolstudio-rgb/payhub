@@ -1,7 +1,7 @@
 import { Inject, Logger } from '@nestjs/common';
 import { CommandHandler, type ICommandHandler } from '@nestjs/cqrs';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ForbiddenError, NotFoundError } from '@payhub/kernel';
+import { NotFoundError } from '@payhub/kernel';
 import { Transactional } from '@payhub/persistence';
 import { OutboxPublisher } from '@payhub/messaging';
 import { PaymentFailed as PaymentFailedContract } from '@payhub/contracts';
@@ -30,8 +30,14 @@ export class CancelPaymentHandler implements ICommandHandler<CancelPayment, Paym
     if (!payment) {
       throw new NotFoundError('Payment', command.input.paymentId);
     }
+    // Not a `ForbiddenError`: answering "this one is not yours" tells a
+    // caller the id is real. Measured — cancelling a stranger's payment
+    // returned 403 and cancelling a random uuid returned 404, which is a
+    // free oracle for confirming that an id seen somewhere is a live
+    // payment. An object the caller may not act on is indistinguishable
+    // from one that does not exist.
     if (payment.userId !== command.input.actorUserId) {
-      throw new ForbiddenError('You cannot cancel this payment', 'CANCEL_FORBIDDEN');
+      throw new NotFoundError('Payment', command.input.paymentId);
     }
 
     // The state machine decides whether cancellation is still possible —

@@ -236,6 +236,7 @@ export class PaymentController {
       new RefundPayment({
         paymentId,
         actorUserId: principal.id,
+        actorIsPlatformAdmin: principal.permissions.includes(Permission.AdminAll),
         ...(dto.amount ? { amountMajor: dto.amount } : {}),
         reason: dto.reason,
       }),

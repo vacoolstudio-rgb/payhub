@@ -10,6 +10,7 @@ import {
   PAYMENT_PROVIDER_REGISTRY,
   type PaymentProviderRegistry,
 } from '../../domain/payment-provider.port.js';
+import { MERCHANT_AUTHORITY, type MerchantAuthority } from '../../domain/merchant-authority.port.js';
 import { type Payment, PaymentDirection, PaymentId } from '../../domain/payment.aggregate.js';
 import { PAYMENT_REPOSITORY, type PaymentRepository } from '../../domain/payment.repository.js';
 import { PAYMENT_UPDATED_EVENT, type PaymentUpdatedEvent } from '../payment.events.js';
@@ -52,6 +53,7 @@ export class RefundPaymentHandler implements ICommandHandler<RefundPayment, Paym
   constructor(
     @Inject(PAYMENT_REPOSITORY) private readonly payments: PaymentRepository,
     @Inject(PAYMENT_PROVIDER_REGISTRY) private readonly providers: PaymentProviderRegistry,
+    @Inject(MERCHANT_AUTHORITY) private readonly merchants: MerchantAuthority,
     private readonly outbox: OutboxPublisher,
     private readonly events: EventEmitter2,
   ) {}
@@ -87,7 +89,7 @@ export class RefundPaymentHandler implements ICommandHandler<RefundPayment, Paym
     if (!payment) {
       throw new NotFoundError('Payment', input.paymentId);
     }
-    this.assertActor(payment, input.actorUserId);
+    await this.assertActor(payment, input);
 
     // Omitting the amount means "refund everything that is still refundable".
     let refundAmount = payment.refundableAmount;
@@ -188,9 +190,30 @@ export class RefundPaymentHandler implements ICommandHandler<RefundPayment, Paym
     return view;
   }
 
-  private assertActor(payment: Payment, actorUserId: string): void {
-    // The payer cannot refund themselves; only the merchant side can.
-    if (payment.userId === actorUserId) {
+  /**
+   * Only the merchant that took the payment may return it.
+   *
+   * This used to read `payment.userId === actorUserId` — refuse the
+   * payer, allow everyone else — with a comment saying only the merchant
+   * side could refund. The two disagreed, and the permission guard in
+   * front of the route hid it: `payment:refund` belongs to every
+   * `merchant_owner`, so the check that was supposed to narrow that down
+   * to *this* merchant narrowed nothing. One merchant owner could refund
+   * another merchant's captured payment, and the money moved.
+   *
+   * Refusing the payer falls out of the ownership rule rather than being
+   * a rule of its own, and a merchant that bought from itself is a
+   * merchant refunding its own sale — which is allowed, and was not.
+   */
+  private async assertActor(
+    payment: Payment,
+    input: { readonly actorUserId: string; readonly actorIsPlatformAdmin: boolean },
+  ): Promise<void> {
+    if (input.actorIsPlatformAdmin) {
+      return;
+    }
+
+    if (!(await this.merchants.mayActFor(payment.merchantId, input.actorUserId))) {
       throw new ForbiddenError('Only the merchant can refund a payment', 'REFUND_FORBIDDEN', {
         paymentId: payment.id,
       });

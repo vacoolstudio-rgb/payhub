@@ -30,6 +30,12 @@ export class RefundPayment {
     readonly input: {
       readonly paymentId: string;
       readonly actorUserId: string;
+      /**
+       * Platform staff bypass the merchant-ownership rule. Passed as a
+       * fact rather than a permission string so the handler never has to
+       * learn the RBAC vocabulary.
+       */
+      readonly actorIsPlatformAdmin: boolean;
       readonly amountMajor?: string;
       readonly reason: string;
     },

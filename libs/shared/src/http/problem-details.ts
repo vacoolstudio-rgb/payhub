@@ -57,7 +57,7 @@ export function problemFromDomainError(
   };
 }
 
-function humanize(code: string): string {
+export function humanize(code: string): string {
   return code
     .toLowerCase()
     .split('_')
