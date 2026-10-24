@@ -2,9 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   type PayloadOf,
   PostTransferCommand as PostTransferContract,
+  SetWalletHoldCommand as SetWalletHoldContract,
   ReverseTransferCommand as ReverseTransferContract,
 } from '@payhub/contracts';
 import { KafkaHandler, type MessageContext } from '@payhub/messaging';
+import { SetWalletHoldService } from '../../application/commands/set-wallet-hold.service.js';
 import { PostTransferService } from '../../application/commands/post-transfer.service.js';
 import { ReverseTransferService } from '../../application/commands/reverse-transfer.service.js';
 import { WalletQueryService } from '../../application/queries/wallet-query.service.js';
@@ -25,6 +27,7 @@ export class LedgerCommandConsumer {
     private readonly postTransfer: PostTransferService,
     private readonly reverseTransfer: ReverseTransferService,
     private readonly walletQueries: WalletQueryService,
+    private readonly walletHold: SetWalletHoldService,
   ) {}
 
   @KafkaHandler(PostTransferContract)
@@ -50,6 +53,30 @@ export class LedgerCommandConsumer {
 
     this.logger.debug(
       `post_transfer ${payload.transferId} → ${outcome.status} (msg ${context.messageId})`,
+    );
+  }
+
+  @KafkaHandler(SetWalletHoldContract)
+  async onSetWalletHold(
+    payload: PayloadOf<typeof SetWalletHoldContract>,
+    context: MessageContext,
+  ): Promise<void> {
+    const result = await this.walletHold.execute({
+      userId: payload.userId,
+      ...(payload.currency ? { currency: payload.currency } : {}),
+      frozen: payload.frozen,
+      reason: payload.reason,
+      actorUserId: payload.actorUserId,
+    });
+
+    // A frozen wallet still reads as active until the projection is
+    // dropped, and a balance that says "active" while the ledger
+    // refuses every transfer is the worst of both answers.
+    await this.walletQueries.invalidate(payload.userId);
+
+    this.logger.log(
+      `set_wallet_hold ${payload.userId} frozen=${payload.frozen} → ` +
+        `${result.affected} wallet(s) (msg ${context.messageId})`,
     );
   }
 

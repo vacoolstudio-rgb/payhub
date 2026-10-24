@@ -23,6 +23,7 @@ import {
   createDataSource,
 } from '@payhub/persistence';
 import { PostTransferService } from '../apps/ledger/src/application/commands/post-transfer.service.js';
+import { SetWalletHoldService } from '../apps/ledger/src/application/commands/set-wallet-hold.service.js';
 import { JOURNAL_REPOSITORY } from '../apps/ledger/src/domain/ledger/journal-entry.repository.js';
 import { TransferPlanner } from '../apps/ledger/src/domain/ledger/transfer-planner.service.js';
 import { LedgerReconciliationJob } from '../apps/ledger/src/application/jobs/reconciliation.job.js';
@@ -57,6 +58,7 @@ describe('Ledger (integration)', () => {
   let moduleRef: TestingModule;
   let service: PostTransferService;
   let reconciliation: LedgerReconciliationJob;
+  let holds: SetWalletHoldService;
 
   // Held as named functions rather than reached through the service, so
   // assertions reference a value instead of an unbound method.
@@ -76,6 +78,8 @@ describe('Ledger (integration)', () => {
   const ALICE = randomUUID();
   const BOB = randomUUID();
   const MERCHANT = randomUUID();
+  /** Whoever pulled the lever; recorded on the hold, never inferred. */
+  const OPERATOR = randomUUID();
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:18-alpine')
@@ -110,6 +114,7 @@ describe('Ledger (integration)', () => {
       imports: [ClsModule.forRoot({ global: true, middleware: { mount: false } })],
       providers: [
         PostTransferService,
+        SetWalletHoldService,
         TransferPlanner,
         LedgerReconciliationJob,
         { provide: AdvisoryLockService, useValue: { withSessionLock: (_n: string, work: () => unknown) => work() } },
@@ -139,6 +144,7 @@ describe('Ledger (integration)', () => {
     TransactionalContext.bind(moduleRef.get(TransactionManager));
     service = moduleRef.get(PostTransferService);
     reconciliation = moduleRef.get(LedgerReconciliationJob);
+    holds = moduleRef.get(SetWalletHoldService);
   }, 180_000);
 
   afterAll(async () => {
@@ -270,6 +276,107 @@ describe('Ledger (integration)', () => {
 
     expect(outcome).toMatchObject({ status: 'rejected', reason: 'wallet_frozen' });
     expect(await balanceOf(ALICE)).toBe('10000');
+  });
+
+  /**
+   * The lever, not just the lock.
+   *
+   * The test above froze a wallet with raw SQL, which proves the ledger
+   * refuses a transfer out of a frozen wallet and says nothing about
+   * whether anything can freeze one. Nothing could: `freeze()` existed
+   * on the aggregate, `WalletFrozen` existed as an event, the status
+   * column allowed it and `wallet:freeze` sat in the permission matrix
+   * — granted to no role and required by no route. Every part of the
+   * mechanism was present except the part that pulls it.
+   */
+  describe('placing and lifting a hold', () => {
+    it('freezes the wallet so the ledger starts refusing transfers', async () => {
+      await service.execute(deposit(ALICE, '100.00'));
+
+      const result = await holds.execute({
+        userId: ALICE,
+        frozen: true,
+        reason: 'Chargeback investigation',
+        actorUserId: OPERATOR,
+      });
+
+      expect(result.affected).toBe(1);
+      await expect(service.execute(withdraw(ALICE, '10.00'))).resolves.toMatchObject({
+        status: 'rejected',
+        reason: 'wallet_frozen',
+      });
+    });
+
+    it('lets money move again once the hold is lifted', async () => {
+      await service.execute(deposit(ALICE, '100.00'));
+      await holds.execute({ userId: ALICE, frozen: true, reason: 'hold', actorUserId: OPERATOR });
+
+      await holds.execute({ userId: ALICE, frozen: false, reason: 'cleared', actorUserId: OPERATOR });
+
+      await expect(service.execute(withdraw(ALICE, '10.00'))).resolves.toMatchObject({
+        status: 'posted',
+      });
+    });
+
+    /** At-least-once delivery means this command arrives twice sooner or later. */
+    it('is a no-op the second time the same command arrives', async () => {
+      await service.execute(deposit(ALICE, '100.00'));
+
+      const first = await holds.execute({
+        userId: ALICE,
+        frozen: true,
+        reason: 'hold',
+        actorUserId: OPERATOR,
+      });
+      const second = await holds.execute({
+        userId: ALICE,
+        frozen: true,
+        reason: 'hold',
+        actorUserId: OPERATOR,
+      });
+
+      expect(first.affected).toBe(1);
+      expect(second.affected).toBe(0);
+    });
+
+    it('freezes only the currency it was given', async () => {
+      await service.execute(deposit(ALICE, '100.00'));
+      await dataSource.query(
+        `INSERT INTO ledger.wallets (id, user_id, currency, available_minor, pending_minor, status)
+         VALUES (gen_random_uuid(), $1, 'EUR', 0, 0, 'active')`,
+        [ALICE],
+      );
+
+      const result = await holds.execute({
+        userId: ALICE,
+        currency: 'USD',
+        frozen: true,
+        reason: 'hold',
+        actorUserId: OPERATOR,
+      });
+
+      const rows = (await dataSource.query(
+        'SELECT currency, status FROM ledger.wallets WHERE user_id = $1 ORDER BY currency',
+        [ALICE],
+      )) as Array<{ currency: string; status: string }>;
+
+      expect(result.affected).toBe(1);
+      expect(rows).toEqual([
+        { currency: 'EUR', status: 'active' },
+        { currency: 'USD', status: 'frozen' },
+      ]);
+    });
+
+    it('reports nothing affected for a user with no wallets', async () => {
+      const result = await holds.execute({
+        userId: randomUUID(),
+        frozen: true,
+        reason: 'hold',
+        actorUserId: OPERATOR,
+      });
+
+      expect(result).toMatchObject({ affected: 0, walletIds: [] });
+    });
   });
 
   /** Enforced by a trigger, so a bug in application code cannot rewrite history. */

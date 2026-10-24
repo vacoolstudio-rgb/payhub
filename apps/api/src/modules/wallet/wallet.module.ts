@@ -14,6 +14,7 @@ import { WalletReadService } from './application/wallet-read.service.js';
 import { WalletScopes } from './application/wallet.cache-scopes.js';
 import { LEDGER_GRPC_CLIENT, LedgerGrpcClient } from './infrastructure/ledger.grpc-client.js';
 import { WalletController } from './presentation/wallet.controller.js';
+import { WalletHoldService } from './application/wallet-hold.service.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -67,7 +68,7 @@ class WalletCacheInvalidator {
     ]),
   ],
   controllers: [WalletController],
-  providers: [LedgerGrpcClient, WalletReadService, WalletCacheInvalidator],
+  providers: [LedgerGrpcClient, WalletReadService, WalletHoldService, WalletCacheInvalidator],
   exports: [WalletReadService, LedgerGrpcClient],
 })
 export class WalletModule {}

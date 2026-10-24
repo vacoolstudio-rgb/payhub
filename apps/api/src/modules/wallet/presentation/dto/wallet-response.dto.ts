@@ -81,3 +81,18 @@ export class StatementPageDto {
   @ApiProperty()
   hasMore!: boolean;
 }
+
+/**
+ * What a freeze request answers with.
+ *
+ * `commandId` rather than a wallet state: the command is durable when
+ * this returns and applied a moment later, so reporting a status here
+ * would be reporting one this response cannot know.
+ */
+export class WalletHoldAcceptedDto {
+  @ApiProperty({ format: 'uuid', description: 'The durable command; use it to correlate logs' })
+  commandId!: string;
+
+  @ApiProperty({ example: true })
+  accepted!: boolean;
+}

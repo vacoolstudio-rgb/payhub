@@ -60,9 +60,42 @@ export const ReverseTransferCommand = defineEvent(
   }),
 );
 
+/**
+ * Stops money moving out of a wallet, or lets it move again.
+ *
+ * The ledger has always refused transfers from a frozen wallet, the
+ * aggregate has always had `freeze()` and `unfreeze()`, there has
+ * always been a `WalletFrozen` event, the status column has always
+ * allowed it and `wallet:freeze` has always been in the permission
+ * matrix. Nothing could set the state: every part of the mechanism
+ * existed except the lever, so the one control a payments platform
+ * needs during a fraud alert could not be pulled.
+ *
+ * A command over the same topic as the others rather than a gRPC
+ * method, because the gRPC surface is deliberately the read side and
+ * every write already arrives this way — through the outbox, so the
+ * decision to freeze and the message announcing it commit together.
+ */
+export const SetWalletHoldCommand = defineEvent(
+  'ledger.set_wallet_hold.v1',
+  Topics.LedgerCommands,
+  z.object({
+    userId: z.string().uuid(),
+    /** Omitted freezes every currency the user holds. */
+    currency: z.string().length(3).optional(),
+    frozen: z.boolean(),
+    /** Recorded on the event; an audit trail needs the why, not just the what. */
+    reason: z.string().min(1).max(500),
+    /** Who pulled the lever. */
+    actorUserId: z.string().uuid(),
+    requestedAt: z.string().datetime({ offset: true }),
+  }),
+);
+
 export const LedgerCommands = {
   [PostTransferCommand.name]: PostTransferCommand,
   [ReverseTransferCommand.name]: ReverseTransferCommand,
+  [SetWalletHoldCommand.name]: SetWalletHoldCommand,
 } as const;
 
 // --- facts ----------------------------------------------------------------

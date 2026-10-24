@@ -58,6 +58,17 @@ const MATRIX: Record<Role, readonly Permission[]> = {
     Permission.PaymentReadAny,
     Permission.MerchantReadAny,
   ],
+  /**
+   * `admin:*` satisfies every check, including `wallet:freeze`, which is
+   * deliberately granted to no role of its own.
+   *
+   * Support is read-only by design and freezing a wallet is not a read:
+   * it stops a customer's money moving. Keeping it inside `admin:*`
+   * means the capability exists and is reachable today, while giving a
+   * fraud-analyst role its own grant later is one line here and no
+   * change to the route — which is the whole reason the permission is
+   * named separately rather than folded into `admin:*`.
+   */
   [Role.Admin]: [Permission.AdminAll],
   [Role.Service]: [Permission.PaymentCreate, Permission.PaymentRead, Permission.PaymentRefund],
 };

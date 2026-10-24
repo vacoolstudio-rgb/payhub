@@ -22,6 +22,7 @@ import { TypeOrmJournalRepository } from './infrastructure/persistence/repositor
 import { TypeOrmWalletRepository } from './infrastructure/persistence/repositories/typeorm-wallet.repository.js';
 import { LedgerGrpcController } from './presentation/grpc/ledger.grpc.controller.js';
 import { ledgerMigrations } from './infrastructure/migrations/index.js';
+import { SetWalletHoldService } from './application/commands/set-wallet-hold.service.js';
 
 /**
  * The ledger service.
@@ -63,6 +64,7 @@ import { ledgerMigrations } from './infrastructure/migrations/index.js';
     // --- application ------------------------------------------------------
     PostTransferService,
     ReverseTransferService,
+    SetWalletHoldService,
     WalletQueryService,
     LedgerReconciliationJob,
 

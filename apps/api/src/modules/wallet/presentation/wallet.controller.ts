@@ -1,5 +1,20 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+} from '@nestjs/common';
+import {
+  ApiAcceptedResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import {
   ApiStandardErrors,
   type AuthenticatedPrincipal,
@@ -9,12 +24,14 @@ import {
 import { ForbiddenError } from '@payhub/kernel';
 import { HttpCache } from '@payhub/redis';
 import { WalletScopes } from '../application/wallet.cache-scopes.js';
-import { StatementQueryDto } from './dto/wallet.dto.js';
+import { SetWalletHoldDto, StatementQueryDto } from './dto/wallet.dto.js';
 import {
   StatementPageDto,
   WalletBalanceResponseDto,
+  WalletHoldAcceptedDto,
 } from './dto/wallet-response.dto.js';
 import { Permission } from '../../identity/domain/role.vo.js';
+import { WalletHoldService } from '../application/wallet-hold.service.js';
 import {
   type StatementEntryView,
   type WalletBalanceView,
@@ -24,7 +41,10 @@ import {
 @ApiTags('wallets')
 @Controller({ path: 'wallets', version: '1' })
 export class WalletController {
-  constructor(private readonly wallets: WalletReadService) {}
+  constructor(
+    private readonly wallets: WalletReadService,
+    private readonly holds: WalletHoldService,
+  ) {}
 
   @Get()
   @ApiOkResponse({ type: [WalletBalanceResponseDto] })
@@ -79,5 +99,66 @@ export class WalletController {
       throw new ForbiddenError('Not allowed to read other users’ wallets', 'WALLET_FORBIDDEN');
     }
     return this.wallets.balances(userId);
+  }
+
+  /**
+   * Stops money leaving a user's wallets, or lets it leave again.
+   *
+   * Every part of this existed except the entry point. The ledger has
+   * always refused a transfer out of a frozen wallet, the aggregate has
+   * always had `freeze()`, the `WalletFrozen` event has always been
+   * defined, the status column has always permitted it, and
+   * `wallet:freeze` has always sat in the permission matrix — granted
+   * to no role and required by no route. So the one control a payments
+   * platform reaches for during a fraud alert could not be reached.
+   *
+   * Asynchronous by design: the command goes through the outbox, so the
+   * decision and the message commit together and the ledger applies it
+   * on consumption. 202 rather than 200 says so honestly instead of
+   * implying the wallet is already frozen.
+   */
+  @Post('users/:userId/freeze')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions(Permission.WalletFreeze)
+  @ApiOperation({ summary: 'Freeze a user’s wallets pending investigation' })
+  @ApiAcceptedResponse({ type: WalletHoldAcceptedDto })
+  @ApiStandardErrors(403)
+  async freeze(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetWalletHoldDto,
+  ): Promise<WalletHoldAcceptedDto> {
+    const { commandId } = await this.holds.request({
+      userId,
+      ...(dto.currency ? { currency: dto.currency } : {}),
+      frozen: true,
+      reason: dto.reason,
+      actorUserId: principal.id,
+    });
+
+    return { commandId, accepted: true };
+  }
+
+  /** The other half: a hold nobody can lift is a hold nobody should place. */
+  @Post('users/:userId/release')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions(Permission.WalletFreeze)
+  @ApiOperation({ summary: 'Release a freeze' })
+  @ApiAcceptedResponse({ type: WalletHoldAcceptedDto })
+  @ApiStandardErrors(403)
+  async release(
+    @CurrentUser() principal: AuthenticatedPrincipal,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Body() dto: SetWalletHoldDto,
+  ): Promise<WalletHoldAcceptedDto> {
+    const { commandId } = await this.holds.request({
+      userId,
+      ...(dto.currency ? { currency: dto.currency } : {}),
+      frozen: false,
+      reason: dto.reason,
+      actorUserId: principal.id,
+    });
+
+    return { commandId, accepted: true };
   }
 }
