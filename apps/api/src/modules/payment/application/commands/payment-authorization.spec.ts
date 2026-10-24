@@ -53,12 +53,18 @@ describe('refund authorization', () => {
   let mayActFor: ReturnType<typeof vi.fn>;
   let unbind: () => void;
 
-  const refundBy = (actorUserId: string, actorIsPlatformAdmin = false) =>
+  const refundBy = (
+    actorUserId: string,
+    extra: { actorIsPlatformAdmin?: boolean; actorMerchantId?: string } = {},
+  ) =>
     handler.execute(
       new RefundPayment({
         paymentId: payment.id,
         actorUserId,
-        actorIsPlatformAdmin,
+        actorIsPlatformAdmin: extra.actorIsPlatformAdmin ?? false,
+        ...(extra.actorMerchantId !== undefined
+          ? { actorMerchantId: extra.actorMerchantId }
+          : {}),
         amountMajor: '50.00',
         reason: 'test',
       }),
@@ -103,9 +109,42 @@ describe('refund authorization', () => {
     await expect(refundBy(ACME_OWNER)).resolves.toMatchObject({ status: 'refunding' });
   });
 
+  /**
+   * The integration path, and the one the first version of this check
+   * broke. A merchant server authenticates with an API key, whose
+   * principal id is the key's id rather than a person's — so asking the
+   * merchant context whether that id owns the merchant always answers
+   * no. The key already names its merchant; that is the comparison.
+   */
+  describe('through a merchant server credential', () => {
+    it('allows a key issued by the merchant that took the payment', async () => {
+      await expect(refundBy('key-1', { actorMerchantId: ACME })).resolves.toMatchObject({
+        status: 'refunding',
+      });
+      expect(mayActFor).not.toHaveBeenCalled();
+    });
+
+    it('refuses a key issued by another merchant', async () => {
+      await expect(
+        refundBy('key-2', { actorMerchantId: '99999999-9999-4999-8999-999999999999' }),
+      ).rejects.toMatchObject({ code: 'REFUND_FORBIDDEN' });
+    });
+
+    it('does not fall back to an owner lookup it cannot answer', async () => {
+      mayActFor.mockResolvedValue(true);
+
+      await expect(
+        refundBy('key-2', { actorMerchantId: '99999999-9999-4999-8999-999999999999' }),
+      ).rejects.toMatchObject({ code: 'REFUND_FORBIDDEN' });
+      expect(mayActFor).not.toHaveBeenCalled();
+    });
+  });
+
   /** Support and incident response would be impossible otherwise. */
   it('allows platform staff regardless of merchant', async () => {
-    await expect(refundBy(RIVAL_OWNER, true)).resolves.toMatchObject({ status: 'refunding' });
+    await expect(refundBy(RIVAL_OWNER, { actorIsPlatformAdmin: true })).resolves.toMatchObject({
+      status: 'refunding',
+    });
     expect(mayActFor).not.toHaveBeenCalled();
   });
 });

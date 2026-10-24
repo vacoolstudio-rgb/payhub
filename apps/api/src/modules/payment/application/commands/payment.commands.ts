@@ -36,6 +36,12 @@ export class RefundPayment {
        * learn the RBAC vocabulary.
        */
       readonly actorIsPlatformAdmin: boolean;
+      /**
+       * Set when the credential itself names a merchant — an API key
+       * does, a user's access token does not. The merchant it names is
+       * the only one it may act for, and no lookup is needed to know it.
+       */
+      readonly actorMerchantId?: string | undefined;
       readonly amountMajor?: string;
       readonly reason: string;
     },

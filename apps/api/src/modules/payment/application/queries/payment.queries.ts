@@ -112,6 +112,22 @@ export class GetPaymentStatsHandler implements IQueryHandler<GetPaymentStats, Pa
 
   async execute(query: GetPaymentStats): Promise<PaymentStats> {
     const { input } = query;
+
+    // The same rule `ListPaymentsHandler` applies, for the same reason.
+    // With neither filter set the SQL's `$4 IS NULL OR …` guards fall
+    // away and the aggregate covers every merchant and every user —
+    // platform-wide volume and fee totals.
+    //
+    // Nothing reaches that today: both transports take the scope from
+    // the principal and never from the request, and the one principal
+    // kind that would leave both empty — `service` — is declared in the
+    // type and constructed nowhere. That is the trap. Whoever adds
+    // service-to-service authentication inherits a money-revealing query
+    // that answers, rather than one that refuses.
+    if (!input.userId && !input.merchantId) {
+      throw new ForbiddenError('Payment statistics must be scoped', 'UNSCOPED_QUERY');
+    }
+
     const key = [
       'payment:stats',
       input.merchantId ?? 'all',

@@ -207,16 +207,35 @@ export class RefundPaymentHandler implements ICommandHandler<RefundPayment, Paym
    */
   private async assertActor(
     payment: Payment,
-    input: { readonly actorUserId: string; readonly actorIsPlatformAdmin: boolean },
+    input: {
+      readonly actorUserId: string;
+      readonly actorIsPlatformAdmin: boolean;
+      readonly actorMerchantId?: string | undefined;
+    },
   ): Promise<void> {
-    if (input.actorIsPlatformAdmin) {
+    if (input.actorIsPlatformAdmin || (await this.mayRefund(payment, input))) {
       return;
     }
 
-    if (!(await this.merchants.mayActFor(payment.merchantId, input.actorUserId))) {
-      throw new ForbiddenError('Only the merchant can refund a payment', 'REFUND_FORBIDDEN', {
-        paymentId: payment.id,
-      });
+    throw new ForbiddenError('Only the merchant can refund a payment', 'REFUND_FORBIDDEN', {
+      paymentId: payment.id,
+    });
+  }
+
+  private async mayRefund(
+    payment: Payment,
+    input: { readonly actorUserId: string; readonly actorMerchantId?: string | undefined },
+  ): Promise<boolean> {
+    // An API key already names the merchant it belongs to, and its
+    // `actorUserId` is the key's own id rather than a person's — asking
+    // the merchant context whether that id owns anything would always
+    // answer no. Refunding through a merchant's own server credential is
+    // the main integration path, and the first version of this check
+    // broke it: the unit tests described a human and passed.
+    if (input.actorMerchantId !== undefined) {
+      return input.actorMerchantId === payment.merchantId;
     }
+
+    return this.merchants.mayActFor(payment.merchantId, input.actorUserId);
   }
 }

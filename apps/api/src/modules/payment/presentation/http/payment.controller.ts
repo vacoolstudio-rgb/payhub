@@ -237,6 +237,7 @@ export class PaymentController {
         paymentId,
         actorUserId: principal.id,
         actorIsPlatformAdmin: principal.permissions.includes(Permission.AdminAll),
+        ...(principal.merchantId !== undefined ? { actorMerchantId: principal.merchantId } : {}),
         ...(dto.amount ? { amountMajor: dto.amount } : {}),
         reason: dto.reason,
       }),
