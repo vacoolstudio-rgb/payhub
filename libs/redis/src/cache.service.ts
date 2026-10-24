@@ -17,6 +17,26 @@ export interface CacheOptions {
   readonly negativeTtlSec?: number;
 }
 
+export interface RevalidateOptions {
+  /** How long the value is served without any refresh at all. */
+  readonly freshSec: number;
+  /**
+   * How much longer a stale copy may be served while one refresh runs.
+   * This is the window the whole design buys: beyond it, readers block.
+   */
+  readonly staleSec: number;
+  readonly l1?: boolean;
+  readonly jitterRatio?: number;
+  readonly negativeTtlSec?: number;
+}
+
+/** What `getOrRevalidate` stores: the value, plus when it stops being fresh. */
+interface Envelope<T> {
+  readonly v: T;
+  /** Epoch milliseconds. */
+  readonly f: number;
+}
+
 /**
  * Sentinel for a cached absence. Chosen so it can never collide with JSON.
  *
@@ -170,6 +190,134 @@ export class CacheService {
     );
     this.inflight.set(key, promise);
     return promise;
+  }
+
+  /**
+   * Cache-aside that never makes a reader wait for a refresh.
+   *
+   * `getOrSet` already collapses a stampede — one process-local promise,
+   * one Redis lock across nodes — but collapsing is not the same as not
+   * waiting. When a hot key expires, the single winner recomputes and
+   * every other caller sits in a 50 ms poll loop for up to half a second,
+   * because the old value is gone: expiry deleted it. The load on the
+   * service behind the cache is bounded; the latency of everyone else is
+   * not, and if the loader is slower than the wait they all fall through
+   * and recompute anyway.
+   *
+   * So the value outlives its freshness. It is stored with a physical TTL
+   * of `freshSec + staleSec` and a logical `fresh until` stamp inside it.
+   * Past the stamp the copy is still returned — immediately — and one
+   * caller is elected to refresh in the background. Readers only ever
+   * block on a key that is genuinely absent.
+   *
+   * The cost is honest and worth naming: a reader can be served data up
+   * to `staleSec` old. That makes this right for aggregates and
+   * configuration, and wrong for a balance — which is why it is a second
+   * method rather than a change to the first.
+   */
+  async getOrRevalidate<T>(
+    key: string,
+    loader: () => Promise<T | null>,
+    options: RevalidateOptions,
+  ): Promise<T | null> {
+    const envelope = await this.get<Envelope<T>>(key);
+
+    if (envelope === null) {
+      return null; // A cached absence is still an answer.
+    }
+
+    if (envelope !== undefined) {
+      if (envelope.f > Date.now()) {
+        return envelope.v;
+      }
+
+      // Stale. Answer now, refresh behind the response. The lock means
+      // one node does it however many are reading, and a failure leaves
+      // the stale copy in place until its physical TTL runs out.
+      void this.refreshInBackground(key, loader, options);
+      return envelope.v;
+    }
+
+    // Cold. Block, but only once: `getOrSet` already elects a single
+    // loader per process and a single node across the cluster. The
+    // envelope is written here too, or the next read would find a bare
+    // value where it expects a freshness stamp.
+    const loaded = await this.getOrSet<Envelope<T>>(
+      key,
+      async () => {
+        const value = await loader();
+        return value === null || value === undefined
+          ? null
+          : { v: value, f: Date.now() + options.freshSec * 1_000 };
+      },
+      {
+        ttlSec: options.freshSec + options.staleSec,
+        ...(options.l1 !== undefined ? { l1: options.l1 } : {}),
+        ...(options.jitterRatio !== undefined ? { jitterRatio: options.jitterRatio } : {}),
+        ...(options.negativeTtlSec !== undefined
+          ? { negativeTtlSec: options.negativeTtlSec }
+          : {}),
+      },
+    );
+
+    return loaded === null ? null : loaded.v;
+  }
+
+  /**
+   * One refresh at a time, and never on the caller's clock.
+   *
+   * Nothing awaits this, so it must not be able to reject: an unhandled
+   * rejection takes the process down under the default Node policy, and
+   * a cache refresh is the last thing that should.
+   */
+  private async refreshInBackground<T>(
+    key: string,
+    loader: () => Promise<T | null>,
+    options: RevalidateOptions,
+  ): Promise<void> {
+    const lockKey = `${key}:refresh`;
+    const token = randomUUID();
+
+    try {
+      const acquired = await this.redis.client.set(lockKey, token, 'PX', 10_000, 'NX');
+      if (!acquired) {
+        return;
+      }
+
+      try {
+        const value = await loader();
+        if (value === null || value === undefined) {
+          await this.redis.client.set(key, NEGATIVE_MARKER, 'EX', options.negativeTtlSec ?? 30);
+          this.l1.delete(key);
+          return;
+        }
+
+        await this.storeEnvelope(key, value, options);
+      } finally {
+        await this.redis.client.eval(RELEASE_IF_OWNER, 1, lockKey, token);
+      }
+    } catch (error) {
+      // The stale value stays readable until its physical TTL, which is
+      // the entire point: a failing dependency degrades freshness rather
+      // than availability.
+      this.logger.warn(
+        `Background refresh of "${key}" failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async storeEnvelope<T>(
+    key: string,
+    value: T,
+    options: RevalidateOptions,
+  ): Promise<void> {
+    const envelope: Envelope<T> = { v: value, f: Date.now() + options.freshSec * 1_000 };
+
+    await this.set(key, envelope, {
+      ttlSec: options.freshSec + options.staleSec,
+      ...(options.l1 !== undefined ? { l1: options.l1 } : {}),
+      ...(options.jitterRatio !== undefined ? { jitterRatio: options.jitterRatio } : {}),
+    });
   }
 
   private async loadWithLock<T>(
