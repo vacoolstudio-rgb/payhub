@@ -258,11 +258,27 @@ function categorise(payment: PaymentView): string {
   );
 }
 
-function fingerprintOf(question: string, context: string): string {
+/**
+ * Cache key for an answer: the question, and the day it was asked.
+ *
+ * The separator is a domain separator, and it matters: without one,
+ * ("ab", "c") and ("a", "bc") hash to the same value, so two different
+ * questions could share a cached answer. It was a literal NUL byte in
+ * the source, which hashes identically and reads as binary on disk -
+ * the same spelling problem the cache's absence sentinel had, where it
+ * cost the module its diffs and hid it from grep.
+ *
+ * The second argument used to be the whole context block, back when one
+ * was assembled up front; any payment landing changed it and so
+ * invalidated every cached answer. The assistant now fetches what it
+ * needs through tools that carry their own short caches, so freshness
+ * is theirs to manage and the day is enough here.
+ */
+function fingerprintOf(question: string, day: string): string {
   return createHash('sha256')
     .update(question.trim().toLowerCase())
-    .update(' ')
-    .update(context)
+    .update('\u0000')
+    .update(day)
     .digest('hex')
     .slice(0, 32);
 }

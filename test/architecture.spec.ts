@@ -177,3 +177,48 @@ describe('architecture', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * Source files have to stay readable to the tools that read them.
+ *
+ * Two modules carried a literal NUL byte: one as the sentinel for a
+ * cached absence, one as a domain separator inside a hash. Both choices
+ * were right - a NUL cannot appear in JSON, and a separator is what
+ * stops ("ab","c") and ("a","bc") hashing alike - and both were spelled
+ * as the byte instead of an escape.
+ *
+ * The string is identical at runtime and the file is not. Git
+ * classified those modules as binary, so they had no diffs and no
+ * blame; grep skipped them in silence, which is the half that costs
+ * real time - searching this repository for `getOrSet` did not list its
+ * own definition, and the answer looked like the method did not exist.
+ *
+ * Nothing about that is visible in an editor, so it needs a test.
+ */
+describe('source encoding', () => {
+  /** Tab, newline and carriage return are the only ones that belong. */
+  const FORBIDDEN = (byte: number) => byte < 9 || (byte > 13 && byte < 32);
+
+  it('contains no control characters outside the printable range', async () => {
+    const files = [
+      ...(await sourceFiles('apps')),
+      ...(await sourceFiles('libs')),
+      ...(await sourceFiles('test')),
+    ];
+
+    const offenders = files.flatMap((file) => {
+      const bytes = readFileSync(join(ROOT, file));
+      const index = bytes.findIndex(FORBIDDEN);
+
+      if (index === -1) {
+        return [];
+      }
+
+      const line = bytes.subarray(0, index).toString('utf8').split('\n').length;
+      const code = `0x${bytes[index]!.toString(16).padStart(2, '0')}`;
+      return [`${file}:${line} contains ${code} - write it as an escape instead`];
+    });
+
+    expect(offenders).toEqual([]);
+  });
+});
