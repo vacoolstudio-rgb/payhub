@@ -7,6 +7,8 @@ export * from './idempotency.interceptor.js';
 export * from './resource-version.service.js';
 export * from './http-cache.decorator.js';
 export * from './http-cache.interceptor.js';
+export * from './principal-quota.decorator.js';
+export * from './principal-quota.interceptor.js';
 export * from './token-bucket.service.js';
 export * from './redis-throttler.storage.js';
 export * from './redis.module.js';

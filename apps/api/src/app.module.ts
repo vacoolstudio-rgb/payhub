@@ -12,7 +12,12 @@ import {
 import { MessagingModule } from '@payhub/messaging';
 import { MetricsInterceptor, ObservabilityModule } from '@payhub/observability';
 import { PersistenceModule } from '@payhub/persistence';
-import { HttpCacheInterceptor, RedisModule, RedisThrottlerStorage } from '@payhub/redis';
+import {
+  HttpCacheInterceptor,
+  PrincipalQuotaInterceptor,
+  RedisModule,
+  RedisThrottlerStorage,
+} from '@payhub/redis';
 import {
   AllExceptionsFilter,
   CorrelationIdMiddleware,
@@ -116,6 +121,9 @@ import { RealtimeModule } from './realtime/realtime.module.js';
     // before the handler runs, while metrics and the timeout still see
     // the request.
     { provide: APP_INTERCEPTOR, useClass: HttpCacheInterceptor },
+    // After the guards, so the authenticated principal is available —
+    // which is why this is an interceptor and not a second guard.
+    { provide: APP_INTERCEPTOR, useClass: PrincipalQuotaInterceptor },
   ],
 })
 export class AppModule implements NestModule {

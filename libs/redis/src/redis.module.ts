@@ -5,6 +5,7 @@ import { DistributedLockService } from './distributed-lock.service.js';
 import { IdempotencyInterceptor } from './idempotency.interceptor.js';
 import { IdempotencyService } from './idempotency.service.js';
 import { HttpCacheInterceptor } from './http-cache.interceptor.js';
+import { PrincipalQuotaInterceptor } from './principal-quota.interceptor.js';
 import { ResourceVersionService } from './resource-version.service.js';
 import { ConfigurableRedisModuleClass } from './redis.module-definition.js';
 import { RedisThrottlerStorage } from './redis-throttler.storage.js';
@@ -26,6 +27,7 @@ import { TokenBucketService } from './token-bucket.service.js';
     IdempotencyInterceptor,
     ResourceVersionService,
     HttpCacheInterceptor,
+    PrincipalQuotaInterceptor,
     TokenBucketService,
     RedisThrottlerStorage,
     { provide: ThrottlerStorage, useExisting: RedisThrottlerStorage },
@@ -38,6 +40,7 @@ import { TokenBucketService } from './token-bucket.service.js';
     IdempotencyInterceptor,
     ResourceVersionService,
     HttpCacheInterceptor,
+    PrincipalQuotaInterceptor,
     TokenBucketService,
     RedisThrottlerStorage,
     ThrottlerStorage,

@@ -14,7 +14,7 @@ import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { CursorPage } from '@payhub/kernel';
-import { HttpCache, IdempotencyInterceptor } from '@payhub/redis';
+import { HttpCache, IdempotencyInterceptor, PrincipalQuota } from '@payhub/redis';
 import {
   ApiIdempotent,
   ApiStandardErrors,
@@ -64,6 +64,11 @@ export class PaymentController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  // Per caller, not per address. The global throttle is a flood guard
+  // that runs before authentication; this is the merchant's own budget,
+  // and a bucket lets them settle a batch in a burst without being
+  // refused for the shape of their traffic.
+  @PrincipalQuota({ name: 'payment-create', capacity: 120, refillPerSecond: 2 })
   @RequirePermissions(Permission.PaymentCreate)
   @Idempotent({ required: true })
   @UseInterceptors(IdempotencyInterceptor)
@@ -199,6 +204,9 @@ export class PaymentController {
     );
   }
 
+  // Tighter than creating one: a refund moves money back out, and no
+  // legitimate integration issues them in bursts.
+  @PrincipalQuota({ name: 'payment-refund', capacity: 20, refillPerSecond: 0.2 })
   @Post(':paymentId/refund')
   @RequirePermissions(Permission.PaymentRefund)
   @Idempotent({ required: true })

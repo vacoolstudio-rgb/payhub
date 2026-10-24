@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { ClsService } from 'nestjs-cls';
+import { trace } from '@opentelemetry/api';
 import { randomUUID } from 'node:crypto';
 import {
   type AppConfig,
@@ -71,11 +72,30 @@ import { CORRELATION_ID_HEADER, PINO_REDACT_PATHS, type PayHubClsStore } from '@
               }
 
               const correlationId = cls.get('correlationId');
+              const requestId = cls.get('requestId');
               const userId = cls.get('principal')?.id;
+
+              /**
+               * The OpenTelemetry ids, when a span is active.
+               *
+               * Without them the two halves of the story never meet: a
+               * slow span in the trace viewer has no path to its log
+               * lines, and an error log has no path to the trace that
+               * shows where the time went. `correlationId` joins our own
+               * services to each other; `traceId` joins them to the
+               * trace, and is the id an exported span is actually
+               * indexed by.
+               */
+              const span = trace.getActiveSpan()?.spanContext();
 
               return {
                 ...(correlationId ? { correlationId } : {}),
+                // Unique per hop, where the correlation id spans all of
+                // them: two log lines with one correlation id and
+                // different request ids are two services, not a retry.
+                ...(requestId ? { requestId } : {}),
                 ...(userId ? { userId } : {}),
+                ...(span ? { traceId: span.traceId, spanId: span.spanId } : {}),
               };
             } catch {
               return {};

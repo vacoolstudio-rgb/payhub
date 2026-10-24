@@ -12,6 +12,13 @@ import type { Request, Response } from 'express';
  * request fails with a 500. Pulling the underlying request out of the
  * GraphQL context is the documented fix, and it means one rate limit covers
  * both transports rather than leaving `/graphql` unprotected.
+ *
+ * Tracking stays on the address on purpose. This guard runs *before*
+ * authentication — that is the point of it, so an unauthenticated flood
+ * never reaches argon2 — which means `req.user` is not set yet and a
+ * per-caller tracker here would silently read as a protection that does
+ * not exist. Quotas that belong to a caller are enforced after
+ * authentication by `PrincipalQuota`.
  */
 @Injectable()
 export class GqlThrottlerGuard extends ThrottlerGuard {
@@ -32,4 +39,5 @@ export class GqlThrottlerGuard extends ThrottlerGuard {
 
     return super.getRequestResponse(context);
   }
+
 }
