@@ -18,3 +18,4 @@ export * from './utils/circuit-breaker.js';
 export * from './utils/crypto.js';
 export * from './utils/redact.js';
 export * from './utils/network.js';
+export * from './decorators/is-metadata.decorator.js';

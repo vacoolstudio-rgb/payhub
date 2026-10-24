@@ -20,9 +20,11 @@ import { WebhookDeliveryRepository } from './webhook-delivery.repository.js';
  * an audit log.
  */
 @Processor(QueueName.WebhookDelivery, {
-  // Concurrency is per worker process. Ten in-flight HTTP calls per pod
-  // keeps the event loop busy without turning a slow merchant into a
-  // memory problem.
+  // A decorator is evaluated once, at import time, so this is only the
+  // floor: `WEBHOOK_CONCURRENCY` is applied to the live worker in
+  // `onModuleInit` below. The setting existed, was validated and
+  // defaulted, and was read by nothing — the ten here was the real
+  // number however the environment was configured.
   concurrency: 10,
   limiter: { max: 100, duration: 1_000 },
 })
@@ -35,6 +37,20 @@ export class WebhookProcessor extends WorkerHost {
    * without this, a big merchant's outage starves everybody else's
    * deliveries.
    */
+  /**
+   * Applies the configured concurrency to the running worker.
+   *
+   * Concurrency is per worker process, so this is the knob that decides
+   * how many merchant endpoints one pod talks to at once: too low and a
+   * backlog never drains, too high and one slow merchant's sockets
+   * become a memory problem. It belongs in configuration, which is
+   * where it was declared — and where it stopped, until now.
+   */
+  onModuleInit(): void {
+    this.worker.concurrency = this.config.webhookConcurrency;
+    this.logger.log(`Webhook delivery concurrency set to ${this.config.webhookConcurrency}`);
+  }
+
   private readonly breakers = new Map<string, CircuitBreaker>();
   private readonly lastUsed = new Map<string, number>();
 

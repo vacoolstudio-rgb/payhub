@@ -104,7 +104,6 @@ export const envSchema = z
     // ---- auth --------------------------------------------------------------
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 chars'),
     JWT_ACCESS_TTL_SEC: positiveInt.default(900),
-    JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 chars'),
     JWT_REFRESH_TTL_SEC: positiveInt.default(2_592_000),
     JWT_ISSUER: z.string().default('payhub'),
     JWT_AUDIENCE: z.string().default('payhub-api'),
@@ -195,13 +194,6 @@ export const envSchema = z
         code: 'custom',
         path: ['KAFKA_SASL_USERNAME'],
         message: 'SASL credentials are required when KAFKA_SASL_MECHANISM is set',
-      });
-    }
-    if (env.NODE_ENV === 'production' && env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['JWT_REFRESH_SECRET'],
-        message: 'Access and refresh tokens must be signed with different secrets',
       });
     }
     if (env.DATABASE_POOL_MIN > env.DATABASE_POOL_MAX) {

@@ -66,6 +66,5 @@ type: Opaque
 stringData:
   DATABASE_URL: postgresql://payhub:CHANGE_ME@postgres.payhub:5432/payhub
   JWT_ACCESS_SECRET: CHANGE_ME_at_least_32_characters_long_value
-  JWT_REFRESH_SECRET: CHANGE_ME_different_32_characters_long_value
   API_KEY_PEPPER: CHANGE_ME_api_key_pepper
   ANTHROPIC_API_KEY: ""

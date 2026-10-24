@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEnum,
-  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -11,6 +10,7 @@ import {
 } from 'class-validator';
 import { CursorPageQueryDto, IsCurrencyCode } from '@payhub/shared';
 import { PaymentDirection, PaymentStatus } from '../../../domain/payment.aggregate.js';
+import { IsMetadata } from '@payhub/shared';
 
 export class CreatePaymentDto {
   @ApiProperty({ format: 'uuid' })
@@ -54,9 +54,15 @@ export class CreatePaymentDto {
   @MaxLength(64)
   reference?: string;
 
-  @ApiPropertyOptional({ type: Object, example: { orderId: '10294' } })
+  @ApiPropertyOptional({
+    type: Object,
+    example: { orderId: '10294' },
+    description:
+      'Up to 50 keys of at most 40 characters, values at most 500. For correlating ' +
+      'this payment with a record in your own system, not for storing the record.',
+  })
   @IsOptional()
-  @IsObject()
+  @IsMetadata()
   metadata?: Record<string, string>;
 }
 

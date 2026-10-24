@@ -222,3 +222,55 @@ describe('source encoding', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * A setting that nothing reads is a knob that turns nothing.
+ *
+ * Four of them had accumulated. `HTTP_BODY_LIMIT` was validated,
+ * defaulted to 256 kb and ignored, so Express's own 100 kb default did
+ * the limiting. `WEBHOOK_CONCURRENCY` and `LLM_CACHE_TTL_SEC` each sat
+ * next to a hardcoded constant of the same value, which is the worst
+ * case: the knob looks connected because the number matches.
+ *
+ * `JWT_REFRESH_SECRET` was the one that mattered. Refresh tokens are 32
+ * random bytes, stored hashed — nothing signs them — and there was a
+ * production rule requiring it to differ from the access secret. An
+ * operator rotating it to end every session would have achieved
+ * nothing, silently.
+ *
+ * This is the shape of defect that keeps turning up here: a thing that
+ * is declared, documented and wired to nowhere. A test is the only way
+ * it stays fixed.
+ */
+describe('configuration', () => {
+  const CONFIG_DIR = 'libs/config/src';
+
+  it('has no environment variable that nothing reads', async () => {
+    const schema = readFileSync(join(ROOT, CONFIG_DIR, 'env.schema.ts'), 'utf8');
+    const namespaces = readFileSync(join(ROOT, CONFIG_DIR, 'namespaces.ts'), 'utf8');
+
+    const keys = [...schema.matchAll(/^\s{4}([A-Z][A-Z0-9_]+):\s/gm)].map((match) => match[1]!);
+    const property = new Map(
+      [...namespaces.matchAll(/(\w+):\s*env\.([A-Z][A-Z0-9_]+)/g)].map((match) => [
+        match[2]!,
+        match[1]!,
+      ]),
+    );
+
+    // Everything outside the config library itself: a variable being
+    // read only by the module that defines it is the case under test.
+    const consumers = [
+      ...(await sourceFiles('apps')),
+      ...(await sourceFiles('libs')),
+    ].filter((file) => !file.startsWith(join('libs', 'config', 'src')));
+
+    const corpus = consumers.map((file) => readFileSync(join(ROOT, file), 'utf8')).join('\n');
+
+    const unread = [...new Set(keys)].filter((key) => {
+      const prop = property.get(key);
+      return !corpus.includes(key) && !(prop && corpus.includes(`.${prop}`));
+    });
+
+    expect(unread).toEqual([]);
+  });
+});

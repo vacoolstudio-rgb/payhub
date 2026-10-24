@@ -36,7 +36,6 @@ x-app-env: &app-env
   KAFKA_TOPIC_PREFIX: payhub
   LEDGER_GRPC_URL: ledger:50051
   JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me-at-least-32-chars}
-  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me-at-least-32-chars}
   API_KEY_PEPPER: ${API_KEY_PEPPER:-dev-api-key-pepper-change-me}
   OTEL_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318

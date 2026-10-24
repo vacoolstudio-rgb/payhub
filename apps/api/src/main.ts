@@ -21,6 +21,7 @@ import {
 } from '@payhub/observability';
 import { AppModule } from './app.module.js';
 import { RedisIoAdapter } from './realtime/redis-io.adapter.js';
+import { json, urlencoded } from 'express';
 
 async function bootstrap(): Promise<void> {
   // Instrumentation first: auto-instrumentation patches pg/ioredis/http on
@@ -62,6 +63,15 @@ async function bootstrap(): Promise<void> {
       hsts: config.isProduction ? { maxAge: 31_536_000, includeSubDomains: true } : false,
     }),
   );
+  // The configured limit, actually applied.
+  //
+  // `HTTP_BODY_LIMIT` was validated, defaulted and documented, and then
+  // read by nobody: Express's own 100 kb default did the limiting, so
+  // the knob was decorative and the real bound was whatever body-parser
+  // happened to ship. Measured before this: a 150 kb body was refused
+  // under a setting that said 256 kb.
+  app.use(json({ limit: config.bodyLimit }));
+  app.use(urlencoded({ extended: true, limit: config.bodyLimit }));
   app.use(compression());
   app.use(cookieParser());
 

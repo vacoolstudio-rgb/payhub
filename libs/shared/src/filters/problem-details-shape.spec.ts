@@ -1,7 +1,7 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { ThrottlerException } from '@nestjs/throttler';
 import { describe, expect, it } from 'vitest';
-import { toProblemFromHttpException } from './all-exceptions.filter.js';
+import { fromExposedError, toProblemFromHttpException } from './all-exceptions.filter.js';
 
 /**
  * The error body is a published contract.
@@ -69,5 +69,64 @@ describe('problem details from an HttpException', () => {
     );
 
     expect(problem.type).toBe('https://docs.payhub.dev/errors/quota-exhausted');
+  });
+});
+
+/**
+ * Rejections from middleware that already know their own status.
+ *
+ * body-parser, cors and multer throw `http-errors` instances: a 4xx
+ * `status` and `expose: true`, meaning the message is safe to show a
+ * client. None of them is an `HttpException`, so they reached the
+ * catch-all and went out as 500 with a stack trace in the log. Measured
+ * against the running API: a body over the limit answered
+ * `500 INTERNAL_ERROR` while the error itself carried 413, which turns
+ * a caller's mistake into a page for whoever is on call.
+ */
+describe('problem details from a middleware rejection', () => {
+  const tooLarge = () =>
+    Object.assign(new Error('request entity too large'), {
+      status: 413,
+      statusCode: 413,
+      expose: true,
+      type: 'entity.too.large',
+    });
+
+  it('answers a payload over the limit with the status the error carries', () => {
+    expect(fromExposedError(tooLarge(), {})).toMatchObject({
+      status: 413,
+      code: 'PAYLOAD_TOO_LARGE',
+      type: 'https://docs.payhub.dev/errors/payload-too-large',
+      detail: 'request entity too large',
+    });
+  });
+
+  /**
+   * `expose` is the condition, not the status alone. An internal error
+   * that happens to carry a 4xx has not been marked safe to show, and
+   * its message does not belong in a response body.
+   */
+  it('declines an error that was never marked safe to show', () => {
+    const hidden = Object.assign(new Error('postgres credentials rejected'), { status: 403 });
+
+    expect(fromExposedError(hidden, {})).toBeNull();
+  });
+
+  it('declines a 5xx, which is not the caller\'s fault to report', () => {
+    const upstream = Object.assign(new Error('bad gateway'), { status: 502, expose: true });
+
+    expect(fromExposedError(upstream, {})).toBeNull();
+  });
+
+  it('declines anything without a status', () => {
+    expect(fromExposedError(new Error('plain'), {})).toBeNull();
+    expect(fromExposedError('a string', {})).toBeNull();
+    expect(fromExposedError(null, {})).toBeNull();
+  });
+
+  it('carries the correlation id through', () => {
+    const problem = fromExposedError(tooLarge(), { correlationId: 'abc-123' });
+
+    expect(problem).toMatchObject({ correlationId: 'abc-123' });
   });
 });

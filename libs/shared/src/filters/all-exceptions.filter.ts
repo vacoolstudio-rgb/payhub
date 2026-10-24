@@ -82,6 +82,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return pgProblem;
     }
 
+    const exposed = fromExposedError(exception, base);
+    if (exposed) {
+      return exposed;
+    }
+
     return {
       type: `${PROBLEM_BASE_URI}/internal-error`,
       title: 'Internal server error',
@@ -145,6 +150,49 @@ export function toProblemFromHttpException(
     ...base,
     timestamp: new Date().toISOString(),
     ...(Array.isArray(message) ? { errors: { validation: message } } : {}),
+  } as ProblemDetails;
+}
+
+/**
+ * Middleware rejections that already know their own status code.
+ *
+ * body-parser, cors, multer and friends throw `http-errors` instances:
+ * a `status` in the 4xx range and `expose: true`, meaning the message is
+ * safe to show a client. None of them is an `HttpException`, so they
+ * fell through to the catch-all and went out as 500 with a stack trace
+ * in the log. Measured: a body over the limit answered
+ * `500 INTERNAL_ERROR` where the error itself said 413, which turns a
+ * caller's mistake into a page for whoever is on call.
+ *
+ * `expose` is the condition rather than the status alone: an error that
+ * carries a 4xx but has not been marked safe to show is not one whose
+ * message belongs in a response body.
+ */
+export function fromExposedError(
+  exception: unknown,
+  base: { instance?: string | undefined; correlationId?: string | undefined },
+): ProblemDetails | null {
+  if (typeof exception !== 'object' || exception === null) {
+    return null;
+  }
+
+  const candidate = exception as { status?: unknown; expose?: unknown; message?: unknown };
+  const status = typeof candidate.status === 'number' ? candidate.status : undefined;
+
+  if (status === undefined || status < 400 || status >= 500 || candidate.expose !== true) {
+    return null;
+  }
+
+  const code = httpStatusToCode(status);
+
+  return {
+    type: `${PROBLEM_BASE_URI}/${code.toLowerCase().replace(/_/g, '-')}`,
+    title: humanize(code),
+    status,
+    detail: asString(candidate.message) ?? humanize(code),
+    code,
+    ...base,
+    timestamp: new Date().toISOString(),
   } as ProblemDetails;
 }
 

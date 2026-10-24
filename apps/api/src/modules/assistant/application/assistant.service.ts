@@ -146,7 +146,13 @@ export class AssistantService {
     await this.budget.record(input.userId, run.model, run.usage);
 
     if (cacheable) {
-      await this.cache.set(cacheKey, run.answer, { ttlSec: 300, jitterRatio: 0.2 });
+      // `LLM_CACHE_TTL_SEC`, which was declared, defaulted to exactly
+      // this number, and read by nobody — so the constant was the real
+      // setting and the variable was decoration.
+      await this.cache.set(cacheKey, run.answer, {
+        ttlSec: this.config.cacheTtlSec,
+        jitterRatio: 0.2,
+      });
     }
 
     return {

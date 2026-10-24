@@ -4,7 +4,6 @@ import { EnvValidationError, loadEnv, resetEnvCache } from './env.js';
 const MINIMAL = {
   DATABASE_URL: 'postgresql://payhub:payhub@localhost:5432/payhub',
   JWT_ACCESS_SECRET: 'a'.repeat(32),
-  JWT_REFRESH_SECRET: 'b'.repeat(32),
   API_KEY_PEPPER: 'c'.repeat(16),
 } as unknown as NodeJS.ProcessEnv;
 
@@ -56,7 +55,6 @@ describe('environment validation', () => {
 
       expect(issues).toContain('DATABASE_URL');
       expect(issues).toContain('JWT_ACCESS_SECRET');
-      expect(issues).toContain('JWT_REFRESH_SECRET');
       expect(issues).toContain('API_KEY_PEPPER');
     }
   });
@@ -71,24 +69,29 @@ describe('environment validation', () => {
     expect(() => loadEnv(withEnv({ JWT_ACCESS_SECRET: 'x'.repeat(31) }))).toThrow();
   });
 
-  it('refuses to sign access and refresh tokens with the same key in production', () => {
-    const shared = 'z'.repeat(40);
+  /**
+   * There used to be a rule here that access and refresh tokens must be
+   * signed with different secrets in production. Refresh tokens are not
+   * signed at all — they are 32 random bytes, stored hashed — so
+   * `JWT_REFRESH_SECRET` signed nothing, and the rule asserted a
+   * relationship between a real secret and a decorative one.
+   *
+   * That is worse than an unused variable. It told an operator the two
+   * keys were independent levers, so rotating the refresh secret to end
+   * every session would have done nothing at all, silently. The
+   * variable and the rule are both gone; this test is what remains, so
+   * nobody re-adds the knob without re-adding the mechanism.
+   */
+  it('does not ask for a secret that signs nothing', () => {
+    const env = loadEnv(withEnv({}));
 
-    expect(() =>
-      loadEnv(
-        withEnv({
-          NODE_ENV: 'production',
-          JWT_ACCESS_SECRET: shared,
-          JWT_REFRESH_SECRET: shared,
-        }),
-      ),
-    ).toThrow(EnvValidationError);
+    expect(Object.keys(env)).not.toContain('JWT_REFRESH_SECRET');
+  });
 
-    // Outside production the same mistake is only a development convenience.
-    resetEnvCache();
-    expect(() =>
-      loadEnv(withEnv({ JWT_ACCESS_SECRET: shared, JWT_REFRESH_SECRET: shared })),
-    ).not.toThrow();
+  it('still rejects a weak access secret, which does sign something', () => {
+    expect(() => loadEnv(withEnv({ JWT_ACCESS_SECRET: 'x'.repeat(31) }))).toThrow(
+      EnvValidationError,
+    );
   });
 
   it('requires an API key when the assistant is switched on', () => {
