@@ -6,7 +6,10 @@ import { ApiKey, ApiKeyId } from '../apps/api/src/modules/identity/domain/api-ke
 import { API_KEY_REPOSITORY } from '../apps/api/src/modules/identity/domain/identity.ports.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { resilienceConfig } from '@payhub/config';
+import { llmConfig, resilienceConfig } from '@payhub/config';
+import { TokenBudgetService } from '../apps/api/src/modules/assistant/application/token-budget.service.js';
+import { MetricsService } from '@payhub/observability';
+import { appConfig } from '@payhub/config';
 import {
   CacheService,
   ResourceVersionService,
@@ -33,6 +36,7 @@ describe('Redis primitives (integration)', () => {
   let moduleRef: TestingModule;
   let redis: RedisService;
   let cache: CacheService;
+  let budget: TokenBudgetService;
   let versions: ResourceVersionService;
   let apiKeyAuth: ApiKeyAuthenticator;
 
@@ -82,6 +86,21 @@ describe('Redis primitives (integration)', () => {
         TokenBucketService,
         IdempotencyService,
         RedisThrottlerStorage,
+        TokenBudgetService,
+        MetricsService,
+        {
+          provide: appConfig.KEY,
+          useValue: { serviceName: 'payhub-test', serviceVersion: '0.0.0', nodeEnv: 'test' },
+        },
+        {
+          provide: llmConfig.KEY,
+          useValue: {
+            enabled: true,
+            userRpm: 1_000,
+            userDailyTokenBudget: 1_000,
+            model: 'test-model',
+          },
+        },
       ],
     }).compile();
 
@@ -93,6 +112,7 @@ describe('Redis primitives (integration)', () => {
     apiKeyAuth = moduleRef.get(ApiKeyAuthenticator);
     locks = moduleRef.get(DistributedLockService);
     buckets = moduleRef.get(TokenBucketService);
+    budget = moduleRef.get(TokenBudgetService);
     idempotency = moduleRef.get(IdempotencyService);
     throttler = moduleRef.get(RedisThrottlerStorage);
   }, 180_000);
@@ -837,6 +857,84 @@ describe('Redis primitives (integration)', () => {
       await expect(
         cache.getOrRevalidate<string>(KEY, failing, { freshSec: 1, staleSec: 60 }),
       ).resolves.toBe('good');
+    });
+  });
+
+  /**
+   * The daily token budget, under concurrency.
+   *
+   * It used to read the remaining allowance and compare it to the
+   * estimate — check-then-act across two round trips, so several
+   * questions arriving together all saw the same remaining budget and
+   * all decided they fit. The rate limiter in front bounded how badly
+   * that could go, which made the budget soft rather than absent; the
+   * agent loop then made a single question worth several billed calls
+   * instead of one, which is a different size of soft.
+   *
+   * The estimate is now held before the call and reconciled against the
+   * real usage afterwards, the same way a wallet holds a pending amount.
+   */
+  describe('assistant token budget', () => {
+    const USER = () => `budget-user-${randomUUID()}`;
+
+    it('admits a request that fits', async () => {
+      await expect(budget.authorizeOrThrow(USER(), 400)).resolves.toBeUndefined();
+    });
+
+    it('refuses one that does not', async () => {
+      await expect(budget.authorizeOrThrow(USER(), 2_000)).rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+      });
+    });
+
+    it('does not spend the budget of a request it refused', async () => {
+      const user = USER();
+
+      await expect(budget.authorizeOrThrow(user, 2_000)).rejects.toThrow();
+
+      expect(await budget.remaining(user)).toBe(1_000);
+    });
+
+    /** The race the reservation exists for. */
+    it('admits only what the budget covers when requests arrive together', async () => {
+      const user = USER();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          budget
+            .authorizeOrThrow(user, 400)
+            .then(() => 'admitted' as const)
+            .catch(() => 'refused' as const),
+        ),
+      );
+
+      // 1000 tokens, 400 apiece: two fit and no more.
+      expect(outcomes.filter((outcome) => outcome === 'admitted')).toHaveLength(2);
+    });
+
+    it('settles the hold against what was actually billed', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 400);
+      await budget.record(user, 'test-model', {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      });
+
+      // Charged the real 120, not the 400 held.
+      expect(await budget.remaining(user)).toBe(880);
+    });
+
+    it('keeps every hold when one question authorises several times', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 300);
+      await budget.authorizeOrThrow(user, 300);
+
+      // Both held: a third would take it past the budget.
+      await expect(budget.authorizeOrThrow(user, 500)).rejects.toThrow();
     });
   });
 });

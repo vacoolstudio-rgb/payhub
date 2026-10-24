@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Query, Req, Res, Sse } from '@nestjs/common';
 import { ApiOperation, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { PrincipalQuota } from '@payhub/redis';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsArray,
@@ -100,6 +101,14 @@ export class AssistantController {
 
   @Post('ask')
   @RequirePermissions(Permission.AssistantUse)
+  // Two limits, on two different axes, because they stop different
+  // things. The throttle counts by address and runs before
+  // authentication, which keeps an anonymous flood off the endpoint. The
+  // quota counts by caller, which is the only axis that means anything
+  // for a question that can now cost several model calls and several
+  // database queries — one stolen token sourced from many addresses gets
+  // a fresh allowance from the first and none from the second.
+  @PrincipalQuota({ name: 'assistant-ask', capacity: 10, refillPerSecond: 0.1 })
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Ask a question about your own transactions' })
   @ApiStandardErrors(429)
@@ -127,6 +136,9 @@ export class AssistantController {
    */
   @Sse('stream')
   @RequirePermissions(Permission.AssistantUse)
+  // A stream holds a connection open for the whole agent loop, so it is
+  // the more expensive of the two and gets the same allowance.
+  @PrincipalQuota({ name: 'assistant-stream', capacity: 10, refillPerSecond: 0.1 })
   @RequestTimeout(0)
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiProduces('text/event-stream')
@@ -197,6 +209,9 @@ export class AssistantController {
 
   @Get('spending')
   @RequirePermissions(Permission.AssistantUse)
+  // Categorisation falls back to the model for merchants the rule table
+  // does not know, so it is not the free lookup its shape suggests.
+  @PrincipalQuota({ name: 'assistant-spending', capacity: 20, refillPerSecond: 0.2 })
   @ApiOperation({ summary: 'Rule-based spend categorisation' })
   async spending(
     @CurrentUser() principal: AuthenticatedPrincipal,

@@ -75,16 +75,41 @@ export class TokenBudgetService {
       };
     }
 
-    const remaining = await this.remaining(userId);
+    // Reserved, not merely read.
+    //
+    // This used to be a read of `remaining` compared against the
+    // estimate, which is a check-then-act across two round trips: two
+    // concurrent questions both see the same remaining budget, both
+    // decide they fit, and both run. The rate limiter above caps how
+    // badly that can go, so the budget was soft rather than absent —
+    // and the agent loop made each request worth up to five billed
+    // calls instead of one, which is a different size of soft.
+    //
+    // So the estimate is charged up front and the real usage reconciled
+    // in `record`, the same hold-then-settle shape the wallet uses for
+    // a pending payment. A crash between the two leaves the reservation
+    // standing until the key expires at midnight: the budget is a cost
+    // control, and failing towards "spent" is the safe direction.
+    const reserved = await this.charge(userId, estimatedTokens);
+    const remaining = Math.max(0, this.config.userDailyTokenBudget - reserved);
 
-    if (remaining < estimatedTokens) {
+    if (reserved > this.config.userDailyTokenBudget) {
+      // Over budget. Give the reservation back — the request will not
+      // run, so it must not count against the day.
+      await this.charge(userId, -estimatedTokens);
       return {
         allowed: false,
-        remainingTokens: remaining,
+        remainingTokens: Math.max(0, this.config.userDailyTokenBudget - (reserved - estimatedTokens)),
         retryAfterMs: this.msUntilMidnightUtc(),
         reason: 'budget_exhausted',
       };
     }
+
+    // Accumulated, not replaced. The agent loop authorises once per
+    // iteration and settles once at the end, so a reservation that
+    // overwrote the previous one would release every hold but the last.
+    const key = reservationKey(userId);
+    this.reservations.set(key, (this.reservations.get(key) ?? 0) + estimatedTokens);
 
     return { allowed: true, remainingTokens: remaining, retryAfterMs: 0 };
   }
@@ -113,13 +138,14 @@ export class TokenBudgetService {
    */
   async record(userId: string, model: string, usage: LlmUsage): Promise<void> {
     const billable = usage.inputTokens + usage.outputTokens;
-    const key = this.budgetKey(userId);
 
-    const spent = await this.redis.client.incrby(key, billable);
-    if (spent === billable) {
-      // First write of the day — set the TTL so the counter self-resets.
-      await this.redis.client.expire(key, Math.ceil(this.msUntilMidnightUtc() / 1000));
-    }
+    // Settle against what was held. The estimate counted input only and
+    // the bill includes output, so this is usually a top-up rather than
+    // a refund — either way the day's counter ends on the real number.
+    const held = this.reservations.get(reservationKey(userId)) ?? 0;
+    this.reservations.delete(reservationKey(userId));
+
+    await this.charge(userId, billable - held);
 
     const pricing = PRICING[model] ?? DEFAULT_PRICING;
     const microUsd =
@@ -139,10 +165,43 @@ export class TokenBudgetService {
     );
   }
 
+  /**
+   * One round trip that both moves the counter and reports it, so no
+   * two callers can act on the same reading.
+   */
+  private async charge(userId: string, tokens: number): Promise<number> {
+    const key = this.budgetKey(userId);
+    const total = await this.redis.client.incrby(key, tokens);
+
+    if (total === tokens) {
+      // First write of the day — set the TTL so the counter self-resets.
+      await this.redis.client.expire(key, Math.ceil(this.msUntilMidnightUtc() / 1000));
+    }
+
+    return total;
+  }
+
   async remaining(userId: string): Promise<number> {
     const spent = Number((await this.redis.client.get(this.budgetKey(userId))) ?? '0');
     return Math.max(0, this.config.userDailyTokenBudget - spent);
   }
+
+  /**
+   * What this process is holding for in-flight requests, per user.
+   *
+   * Per process because a hold belongs to the request that took it and
+   * that request lives here; another replica settling it would be
+   * settling someone else's.
+   *
+   * Two concurrent questions from one user share an entry, and the
+   * first to settle releases both holds. The total charged is still
+   * exactly what was billed — each settlement adds its own usage — so
+   * the error is a brief window where the second question is less
+   * protected, not a wrong number at the end. Worth naming rather than
+   * threading a reservation id through the whole call chain for a cost
+   * control that already has a rate limiter in front of it.
+   */
+  private readonly reservations = new Map<string, number>();
 
   private budgetKey(userId: string): string {
     // UTC day bucket so the key rolls over predictably regardless of where
@@ -163,4 +222,8 @@ export class TokenBudgetService {
     );
     return midnight - now.getTime();
   }
+}
+
+function reservationKey(userId: string): string {
+  return `${userId}:${new Date().toISOString().slice(0, 10)}`;
 }

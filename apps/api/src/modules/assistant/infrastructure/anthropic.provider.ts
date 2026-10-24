@@ -6,6 +6,8 @@ import { DependencyFailureError, RateLimitedError } from '@payhub/kernel';
 import { backoffDelay } from '@payhub/shared';
 import type {
   LlmCompletion,
+  LlmContentBlock,
+  LlmMessage,
   LlmProvider,
   LlmRequest,
   LlmStreamChunk,
@@ -58,19 +60,27 @@ export class AnthropicProvider implements LlmProvider {
               },
             ]
           : request.system,
-        messages: request.messages.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+        messages: request.messages.map(toWireMessage),
+        ...(request.tools && request.tools.length > 0
+          ? {
+              tools: request.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
+              })),
+            }
+          : {}),
       });
 
-      const text = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      const content = response.content.flatMap(toPortBlock);
+      const text = content
+        .filter((block): block is Extract<LlmContentBlock, { type: 'text' }> => block.type === 'text')
         .map((block) => block.text)
         .join('');
 
       return {
         text,
+        content,
         usage: toUsage(response.usage),
         model: response.model,
         stopReason: response.stop_reason,
@@ -104,10 +114,16 @@ export class AnthropicProvider implements LlmProvider {
                   },
                 ]
               : request.system,
-            messages: request.messages.map((message) => ({
-              role: message.role,
-              content: message.content,
-            })),
+            messages: request.messages.map(toWireMessage),
+            ...(request.tools && request.tools.length > 0
+              ? {
+                  tools: request.tools.map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
+                  })),
+                }
+              : {}),
           },
           request.signal ? { signal: request.signal } : {},
         );
@@ -123,7 +139,12 @@ export class AnthropicProvider implements LlmProvider {
         }
 
         const final = await stream.finalMessage();
-        yield { type: 'done', usage: toUsage(final.usage), stopReason: final.stop_reason };
+        yield {
+          type: 'done',
+          usage: toUsage(final.usage),
+          stopReason: final.stop_reason,
+          content: final.content.flatMap(toPortBlock),
+        };
         return;
       } catch (error) {
         const classified = this.classify(error);
@@ -141,16 +162,31 @@ export class AnthropicProvider implements LlmProvider {
     }
   }
 
+  /**
+   * Through the same retry and classification as everything else.
+   *
+   * This was the one call that went to the provider raw, which did not
+   * matter much when it ran once per question and matters now that the
+   * agent loop runs it before every iteration. Measured with a
+   * deliberately invalid key: the request came back 500 INTERNAL_ERROR
+   * with an SDK stack trace, where `complete` on the same credentials
+   * would have produced a 503 naming the dependency. A provider blip
+   * while counting tokens is the same kind of event as one while
+   * generating, and deserves the same answer.
+   */
   async countTokens(request: Pick<LlmRequest, 'system' | 'messages'>): Promise<number> {
+    return this.withRetries(() => this.countTokensOnce(request));
+  }
+
+  private async countTokensOnce(
+    request: Pick<LlmRequest, 'system' | 'messages'>,
+  ): Promise<number> {
     // The provider's own counter, not a local tokenizer guess: budgets that
     // are enforced on an estimate drift from what is actually billed.
     const response = await this.client.messages.countTokens({
       model: this.config.model,
       system: request.system,
-      messages: request.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
+      messages: request.messages.map(toWireMessage),
     });
 
     return response.input_tokens;
@@ -262,4 +298,56 @@ function toUsage(usage: {
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
   };
+}
+
+/**
+ * Port blocks to the wire, and back.
+ *
+ * The two shapes are close enough to tempt a cast and different enough
+ * that a cast would be wrong: Anthropic nests a tool result's content as
+ * blocks and names the fields in snake case. Translating in the adapter
+ * is what lets the agent loop be written against the port.
+ */
+function toWireMessage(message: LlmMessage): Anthropic.MessageParam {
+  if (typeof message.content === 'string') {
+    return { role: message.role, content: message.content };
+  }
+
+  return {
+    role: message.role,
+    content: message.content.map((block): Anthropic.ContentBlockParam => {
+      switch (block.type) {
+        case 'text':
+          return { type: 'text', text: block.text };
+        case 'tool_use':
+          return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+        case 'tool_result':
+          return {
+            type: 'tool_result',
+            tool_use_id: block.toolUseId,
+            content: block.content,
+            ...(block.isError ? { is_error: true } : {}),
+          };
+      }
+    }),
+  };
+}
+
+function toPortBlock(block: Anthropic.ContentBlock): LlmContentBlock[] {
+  if (block.type === 'text') {
+    return [{ type: 'text', text: block.text }];
+  }
+  if (block.type === 'tool_use') {
+    return [
+      {
+        type: 'tool_use',
+        id: block.id,
+        name: block.name,
+        input: (block.input ?? {}) as Record<string, unknown>,
+      },
+    ];
+  }
+  // Thinking blocks and anything the SDK adds later are not part of the
+  // contract the loop reads; dropping them is deliberate, not an omission.
+  return [];
 }
