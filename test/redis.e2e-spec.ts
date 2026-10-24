@@ -6,7 +6,10 @@ import { ApiKey, ApiKeyId } from '../apps/api/src/modules/identity/domain/api-ke
 import { API_KEY_REPOSITORY } from '../apps/api/src/modules/identity/domain/identity.ports.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { resilienceConfig } from '@payhub/config';
+import { llmConfig, resilienceConfig } from '@payhub/config';
+import { TokenBudgetService } from '../apps/api/src/modules/assistant/application/token-budget.service.js';
+import { MetricsService } from '@payhub/observability';
+import { appConfig } from '@payhub/config';
 import {
   CacheService,
   ResourceVersionService,
@@ -33,6 +36,7 @@ describe('Redis primitives (integration)', () => {
   let moduleRef: TestingModule;
   let redis: RedisService;
   let cache: CacheService;
+  let budget: TokenBudgetService;
   let versions: ResourceVersionService;
   let apiKeyAuth: ApiKeyAuthenticator;
 
@@ -82,6 +86,21 @@ describe('Redis primitives (integration)', () => {
         TokenBucketService,
         IdempotencyService,
         RedisThrottlerStorage,
+        TokenBudgetService,
+        MetricsService,
+        {
+          provide: appConfig.KEY,
+          useValue: { serviceName: 'payhub-test', serviceVersion: '0.0.0', nodeEnv: 'test' },
+        },
+        {
+          provide: llmConfig.KEY,
+          useValue: {
+            enabled: true,
+            userRpm: 1_000,
+            userDailyTokenBudget: 1_000,
+            model: 'test-model',
+          },
+        },
       ],
     }).compile();
 
@@ -93,6 +112,7 @@ describe('Redis primitives (integration)', () => {
     apiKeyAuth = moduleRef.get(ApiKeyAuthenticator);
     locks = moduleRef.get(DistributedLockService);
     buckets = moduleRef.get(TokenBucketService);
+    budget = moduleRef.get(TokenBudgetService);
     idempotency = moduleRef.get(IdempotencyService);
     throttler = moduleRef.get(RedisThrottlerStorage);
   }, 180_000);
@@ -701,6 +721,220 @@ describe('Redis primitives (integration)', () => {
       const keys = await redis.client.keys('*');
       expect(keys.some((key) => key.includes(hash))).toBe(true);
       expect(keys.every((key) => !key.includes('ph_test_'))).toBe(true);
+    });
+  });
+
+  /**
+   * Serving stale data instead of making everyone wait.
+   *
+   * `getOrSet` already stops a stampede from reaching the database, but
+   * the readers that lose the race still wait for the winner — the old
+   * value is gone, because expiry deleted it. Under
+   * `getOrRevalidate` the value outlives its freshness, so the losers
+   * are answered from the stale copy at once and one of them refreshes
+   * behind the response.
+   *
+   * Against a real Redis because the election is a `SET NX` and the
+   * point of the test is what happens when several callers race it.
+   */
+  describe('stale-while-revalidate', () => {
+    /**
+     * A key per test, deliberately.
+     *
+     * A background refresh outlives the call that triggered it — that is
+     * the whole design — so one test's refresh can land after the next
+     * test's `flushdb` and write a value the next test never asked for.
+     * It showed up as a failure only in the full file and never alone.
+     * Isolating by key is the honest fix; sharing one would just be a
+     * slower way to be flaky.
+     */
+    let KEY = 'swr:report';
+
+    beforeEach(() => {
+      KEY = `swr:report:${randomUUID()}`;
+    });
+
+    /** A loader that counts its calls and is slow enough to race against. */
+    const countingLoader = (value: () => string, ms = 150) => {
+      const calls = { n: 0 };
+      return {
+        calls,
+        load: async () => {
+          calls.n += 1;
+          await delay(ms);
+          return value();
+        },
+      };
+    };
+
+    it('blocks only on a key that is genuinely absent', async () => {
+      const loader = countingLoader(() => 'first', 50);
+
+      const value = await cache.getOrRevalidate(KEY, loader.load, {
+        freshSec: 1,
+        staleSec: 60,
+      });
+
+      expect(value).toBe('first');
+      expect(loader.calls.n).toBe(1);
+    });
+
+    it('serves the stale copy immediately once it is no longer fresh', async () => {
+      let version = 1;
+      const loader = countingLoader(() => `v${version}`, 200);
+
+      await cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 });
+      await delay(1_100);
+      version = 2;
+
+      const startedAt = Date.now();
+      const value = await cache.getOrRevalidate(KEY, loader.load, {
+        freshSec: 1,
+        staleSec: 60,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      // The stale answer, not the 200 ms the refresh takes.
+      expect(value).toBe('v1');
+      expect(elapsed).toBeLessThan(100);
+    });
+
+    it('refreshes exactly once however many readers find it stale', async () => {
+      let version = 1;
+      const loader = countingLoader(() => `v${version}`, 150);
+
+      await cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 });
+      await delay(1_100);
+      version = 2;
+
+      const readers = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 }),
+        ),
+      );
+
+      // Every reader got the old value without waiting...
+      expect(readers.every((value) => value === 'v1')).toBe(true);
+      await delay(400);
+      // ...and the cold load plus exactly one refresh is all the loader saw.
+      expect(loader.calls.n).toBe(2);
+    });
+
+    it('serves the new value once the refresh lands', async () => {
+      let version = 1;
+      const loader = countingLoader(() => `v${version}`, 50);
+
+      await cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 });
+      await delay(1_100);
+      version = 2;
+
+      await cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 });
+      await delay(400);
+
+      await expect(
+        cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 }),
+      ).resolves.toBe('v2');
+    });
+
+    /**
+     * The property that makes this worth having: a dependency that is
+     * down degrades freshness, not availability.
+     */
+    it('keeps answering from the stale copy when the refresh fails', async () => {
+      const loader = countingLoader(() => 'good', 10);
+
+      await cache.getOrRevalidate(KEY, loader.load, { freshSec: 1, staleSec: 60 });
+      await delay(1_100);
+
+      const failing = async (): Promise<string | null> => {
+        throw new Error('dependency is down');
+      };
+
+      await expect(
+        cache.getOrRevalidate<string>(KEY, failing, { freshSec: 1, staleSec: 60 }),
+      ).resolves.toBe('good');
+      await delay(200);
+      await expect(
+        cache.getOrRevalidate<string>(KEY, failing, { freshSec: 1, staleSec: 60 }),
+      ).resolves.toBe('good');
+    });
+  });
+
+  /**
+   * The daily token budget, under concurrency.
+   *
+   * It used to read the remaining allowance and compare it to the
+   * estimate — check-then-act across two round trips, so several
+   * questions arriving together all saw the same remaining budget and
+   * all decided they fit. The rate limiter in front bounded how badly
+   * that could go, which made the budget soft rather than absent; the
+   * agent loop then made a single question worth several billed calls
+   * instead of one, which is a different size of soft.
+   *
+   * The estimate is now held before the call and reconciled against the
+   * real usage afterwards, the same way a wallet holds a pending amount.
+   */
+  describe('assistant token budget', () => {
+    const USER = () => `budget-user-${randomUUID()}`;
+
+    it('admits a request that fits', async () => {
+      await expect(budget.authorizeOrThrow(USER(), 400)).resolves.toBeUndefined();
+    });
+
+    it('refuses one that does not', async () => {
+      await expect(budget.authorizeOrThrow(USER(), 2_000)).rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+      });
+    });
+
+    it('does not spend the budget of a request it refused', async () => {
+      const user = USER();
+
+      await expect(budget.authorizeOrThrow(user, 2_000)).rejects.toThrow();
+
+      expect(await budget.remaining(user)).toBe(1_000);
+    });
+
+    /** The race the reservation exists for. */
+    it('admits only what the budget covers when requests arrive together', async () => {
+      const user = USER();
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          budget
+            .authorizeOrThrow(user, 400)
+            .then(() => 'admitted' as const)
+            .catch(() => 'refused' as const),
+        ),
+      );
+
+      // 1000 tokens, 400 apiece: two fit and no more.
+      expect(outcomes.filter((outcome) => outcome === 'admitted')).toHaveLength(2);
+    });
+
+    it('settles the hold against what was actually billed', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 400);
+      await budget.record(user, 'test-model', {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      });
+
+      // Charged the real 120, not the 400 held.
+      expect(await budget.remaining(user)).toBe(880);
+    });
+
+    it('keeps every hold when one question authorises several times', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 300);
+      await budget.authorizeOrThrow(user, 300);
+
+      // Both held: a third would take it past the budget.
+      await expect(budget.authorizeOrThrow(user, 500)).rejects.toThrow();
     });
   });
 });

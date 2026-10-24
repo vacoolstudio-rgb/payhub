@@ -112,4 +112,60 @@ describe('AnthropicProvider: retry budget', () => {
     await expect(retryWith(provider, operation)).rejects.toThrow();
     expect(operation).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * Token counting is a provider call like any other.
+   *
+   * It was the one that went out raw, with no classification and no
+   * retry — tolerable when it ran once per question, and not once the
+   * agent loop began running it before every iteration. Measured
+   * against the real API with a deliberately invalid key: the endpoint
+   * answered 500 INTERNAL_ERROR with an SDK stack trace, where the same
+   * credentials through `complete` produce a 503 naming the dependency.
+   */
+  describe('counting tokens', () => {
+    const countWith = (provider: AnthropicProvider, impl: () => Promise<unknown>) => {
+      (provider as unknown as { client: { messages: { countTokens: unknown } } }).client = {
+        messages: { countTokens: impl },
+      } as never;
+      return provider.countTokens({ system: 'system', messages: [] });
+    };
+
+    it('reports a provider failure as a dependency failure, not an unhandled error', async () => {
+      const provider = new AnthropicProvider(config({ maxRetries: 0 }));
+
+      await expect(
+        countWith(provider, async () => {
+          throw new Anthropic.APIError(
+            401,
+            { error: { message: 'invalid x-api-key' } },
+            'invalid x-api-key',
+            undefined,
+          );
+        }),
+      ).rejects.toMatchObject({ code: 'ANTHROPIC_UNAVAILABLE' });
+    });
+
+    it('retries a transient failure the way a completion would', async () => {
+      const provider = new AnthropicProvider(config({ maxRetries: 2 }));
+      let attempts = 0;
+
+      const count = await countWith(provider, async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw retryableFailure();
+        }
+        return { input_tokens: 42 };
+      });
+
+      expect(count).toBe(42);
+      expect(attempts).toBe(2);
+    });
+
+    it('returns the provider count on the first success', async () => {
+      const provider = new AnthropicProvider(config());
+
+      await expect(countWith(provider, async () => ({ input_tokens: 128 }))).resolves.toBe(128);
+    });
+  });
 });

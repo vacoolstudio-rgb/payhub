@@ -4,6 +4,8 @@ import { PaymentModule } from '../payment/payment.module.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { AssistantService } from './application/assistant.service.js';
 import { TokenBudgetService } from './application/token-budget.service.js';
+import { AccountToolsService } from './application/account-tools.service.js';
+import { AgentLoopService } from './application/agent-loop.service.js';
 import { LLM_PROVIDER } from './domain/llm.port.js';
 import { AnthropicProvider } from './infrastructure/anthropic.provider.js';
 import { AssistantController } from './presentation/assistant.controller.js';
@@ -14,6 +16,8 @@ import { AssistantController } from './presentation/assistant.controller.js';
   providers: [
     AssistantService,
     TokenBudgetService,
+    AccountToolsService,
+    AgentLoopService,
     { provide: LLM_PROVIDER, useClass: AnthropicProvider },
   ],
   exports: [AssistantService],
