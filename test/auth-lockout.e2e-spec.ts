@@ -34,7 +34,7 @@ const PASSWORD = 'correct horse battery staple';
  * production. The transaction boundary is the behaviour under test, so it
  * has to be a real one.
  */
-describe('Login lockout (integration)', () => {
+describe('Authentication writes that must survive a throw (integration)', () => {
   let container: StartedPostgreSqlContainer;
   let dataSource: DataSource;
   let moduleRef: TestingModule;
@@ -210,5 +210,82 @@ describe('Login lockout (integration)', () => {
     )) as Array<{ count: number }>;
 
     expect(rows[0]?.count).toBe(1);
+  });
+
+  /**
+   * Refresh-token reuse, and the revocation that has to outlive the
+   * error reporting it.
+   *
+   * Exactly the same trap as the lockout above, in the place where it
+   * costs more. `refresh` is `@Transactional`, reuse detection throws,
+   * and the throw rolled back the family revocation — while the error
+   * message told the caller every session in the family had been
+   * revoked. Measured on the running API before the fix: a family with
+   * two live sessions still had two afterwards.
+   *
+   * The ordering below is the one that matters. A thief who uses the
+   * stolen token first holds a rotated token of their own; the real
+   * owner's next refresh is what trips the alarm. An alarm that revokes
+   * nothing leaves the thief with the session and locks out the owner.
+   */
+  describe('refresh token reuse', () => {
+    // Earlier tests in this file log in successfully, and those sessions
+    // are live. The counts below are about one family, so start clean.
+    beforeEach(async () => {
+      await dataSource.query('DELETE FROM payhub.refresh_sessions');
+    });
+
+    const start = async () => {
+      const { tokens } = await auth.login({
+        email: EMAIL,
+        password: PASSWORD,
+        userAgent: 'test',
+        ip: '10.0.0.1',
+      });
+      return tokens.refreshToken;
+    };
+
+    const liveSessions = async (): Promise<number> => {
+      const [row] = (await dataSource.query(
+        'SELECT count(*)::int AS count FROM payhub.refresh_sessions WHERE revoked_at IS NULL',
+      )) as Array<{ count: number }>;
+      return row!.count;
+    };
+
+    it('revokes the whole family, and the revocation is committed', async () => {
+      const stolen = await start();
+      await auth.refresh(stolen);
+
+      expect(await liveSessions()).toBeGreaterThan(0);
+
+      await expect(auth.refresh(stolen)).rejects.toMatchObject({
+        code: 'REFRESH_TOKEN_REUSED',
+      });
+
+      expect(await liveSessions()).toBe(0);
+    });
+
+    it("leaves the thief's rotated token unusable", async () => {
+      const stolen = await start();
+      const { tokens } = await auth.refresh(stolen);
+
+      await expect(auth.refresh(stolen)).rejects.toThrow();
+
+      await expect(auth.refresh(tokens.refreshToken)).rejects.toMatchObject({
+        code: 'INVALID_REFRESH_TOKEN',
+      });
+    });
+
+    it('does not touch a different family', async () => {
+      const other = await start();
+      const stolen = await start();
+      await auth.refresh(stolen);
+
+      await expect(auth.refresh(stolen)).rejects.toThrow();
+
+      await expect(auth.refresh(other)).resolves.toMatchObject({
+        tokens: expect.objectContaining({ refreshToken: expect.any(String) }),
+      });
+    });
   });
 });

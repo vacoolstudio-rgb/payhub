@@ -134,6 +134,27 @@ export class AuthService {
     await this.users.save(user);
   }
 
+  /**
+   * Kills the token family on its own transaction.
+   *
+   * The same trap as `countFailedAttempt`, in the place where it costs
+   * the most. `refresh` is `@Transactional`, reuse detection *throws*,
+   * and the throw rolled back the revocation that the error message
+   * announces. Measured on the running API: a family with two live
+   * sessions still had two live sessions after a replay was detected
+   * and logged, and the successor token kept working.
+   *
+   * That is the whole scenario this detection exists for. A thief who
+   * uses the stolen token first gets a rotated one of their own; the
+   * real owner's next refresh is what trips the alarm. If the alarm
+   * revokes nothing, the thief keeps the session and the owner is the
+   * only one locked out — the exact inversion of what is intended.
+   */
+  @Transactional({ propagation: 'REQUIRES_NEW' })
+  private async revokeFamilyOutOfBand(familyId: TokenFamilyId): Promise<number> {
+    return this.sessions.revokeFamily(familyId, new Date());
+  }
+
   @Transactional()
   async login(command: LoginCommand): Promise<AuthResult> {
     const email = Email.create(command.email);
@@ -199,7 +220,7 @@ export class AuthService {
     if (session.isReplay) {
       // Either the client retried or the token leaked. We cannot tell, so we
       // assume the worst and invalidate the entire chain.
-      const revoked = await this.sessions.revokeFamily(session.familyId, new Date());
+      const revoked = await this.revokeFamilyOutOfBand(session.familyId);
       this.logger.warn(
         `Refresh token reuse detected for user ${session.userId}; revoked ${revoked} session(s)`,
       );
