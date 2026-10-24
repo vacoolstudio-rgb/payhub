@@ -20,10 +20,13 @@ const joined = (client: Client): string[] =>
 
 describe('EventsGateway: subscribe:merchant', () => {
   let gateway: EventsGateway;
+  let mayActFor: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    mayActFor = vi.fn().mockResolvedValue(false);
     gateway = new EventsGateway(
       { verifyAccessToken: vi.fn() } as never,
+      { mayActFor } as never,
       { isProduction: false } as never,
     );
   });
@@ -88,6 +91,43 @@ describe('EventsGateway: subscribe:merchant', () => {
       await expect(
         gateway.subscribeToMerchant(client, { merchantId: OTHER_MERCHANT }),
       ).resolves.toEqual({ subscribed: `merchant:${OTHER_MERCHANT}` });
+    });
+
+    /**
+     * The case the suite was missing, and the reason the feature was
+     * dead: a merchant owner signing in through the dashboard holds a
+     * user token, and a user token carries no `merchantId`. Every one of
+     * them was refused. The existing tests passed because they described
+     * an API-key principal and an administrator — the two kinds of caller
+     * that do not use a browser.
+     */
+    it('subscribes a merchant owner whose token carries no merchant claim', async () => {
+      mayActFor.mockResolvedValue(true);
+      const client = socket({ id: 'owner-1' });
+
+      await expect(gateway.subscribeToMerchant(client, { merchantId: MERCHANT })).resolves.toEqual({
+        subscribed: `merchant:${MERCHANT}`,
+      });
+      expect(mayActFor).toHaveBeenCalledWith(MERCHANT, 'owner-1');
+    });
+
+    it('refuses a user who does not own the merchant', async () => {
+      mayActFor.mockResolvedValue(false);
+      const client = socket({ id: 'stranger' });
+
+      await expect(
+        gateway.subscribeToMerchant(client, { merchantId: OTHER_MERCHANT }),
+      ).rejects.toBeInstanceOf(WsException);
+      expect(joined(client)).toHaveLength(0);
+    });
+
+    /** An API key already names its merchant; no lookup needed. */
+    it('does not query the merchant context when the token names it', async () => {
+      const client = socket({ merchantId: MERCHANT });
+
+      await gateway.subscribeToMerchant(client, { merchantId: MERCHANT });
+
+      expect(mayActFor).not.toHaveBeenCalled();
     });
 
     it('refuses an unauthenticated socket before looking at the frame', async () => {

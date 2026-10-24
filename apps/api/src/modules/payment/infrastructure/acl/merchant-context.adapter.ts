@@ -47,8 +47,6 @@ export class MerchantContextAdapter implements MerchantPricing, MerchantAuthorit
   }
 
   async mayActFor(merchantId: string, userId: string): Promise<boolean> {
-    const merchant = await this.merchants.loadAggregate(merchantId);
-
-    return merchant.ownerUserId === userId;
+    return this.merchants.mayActFor(merchantId, userId);
   }
 }

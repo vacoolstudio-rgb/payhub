@@ -177,16 +177,35 @@ export class AuthenticationGuard implements CanActivate {
         return GqlExecutionContext.create(context).getContext<{ req?: RequestLike }>().req;
       case 'ws': {
         const client = context.switchToWs().getClient<{
-          handshake?: { headers: Record<string, string | string[] | undefined> };
-          data?: { user?: AuthenticatedPrincipal };
+          handshake?: {
+            headers: Record<string, string | string[] | undefined>;
+            auth?: { token?: string };
+          };
         }>();
         if (!client.handshake) {
           return undefined;
         }
-        const socketUser = client.data?.user;
+
+        // A browser cannot put a header on a WebSocket, so the gateway
+        // takes the token from the handshake's auth payload instead. This
+        // presents it the way every other transport does, which is the
+        // point: the socket then runs the one authentication path, and
+        // gets signature, expiry and revocation checks per message rather
+        // than once at connection time.
+        //
+        // The previous version read the principal the gateway had already
+        // attached to the socket and passed it along as `user` — a field
+        // `tryAttach` does not look at. So every message from a browser
+        // client was rejected as unauthenticated, and `subscribe:merchant`
+        // could not be reached by the only kind of client that wants it.
+        const token = client.handshake.auth?.token;
+        const presented = single(client.handshake.headers['authorization']);
+
         return {
-          headers: client.handshake.headers,
-          ...(socketUser ? { user: socketUser } : {}),
+          headers:
+            presented === undefined && token !== undefined
+              ? { ...client.handshake.headers, authorization: `Bearer ${token}` }
+              : client.handshake.headers,
         };
       }
       case 'rpc':

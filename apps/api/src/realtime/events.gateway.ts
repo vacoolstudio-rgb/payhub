@@ -19,6 +19,7 @@ import {
   type WalletUpdatedEvent,
 } from '../modules/payment/application/payment.events.js';
 import { TOKEN_ISSUER, type TokenIssuer } from '../modules/identity/application/token-issuer.port.js';
+import { MerchantService } from '../modules/merchant/application/merchant.service.js';
 
 interface AuthenticatedSocket extends Socket {
   data: { user?: AuthenticatedPrincipal };
@@ -71,6 +72,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(
     @Inject(TOKEN_ISSUER) private readonly tokens: TokenIssuer,
+    private readonly merchants: MerchantService,
     @Inject(appConfig.KEY) private readonly config: AppConfig,
   ) {}
 
@@ -136,9 +138,23 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     const { merchantId } = parsed.data;
 
-    // The principal's merchant scope is decided by the token, never by the
-    // message — otherwise any client could subscribe to anyone's traffic.
-    if (user.merchantId !== merchantId && !user.permissions.includes('admin:*')) {
+    // Never decided by the message — otherwise any client could subscribe
+    // to anyone's traffic.
+    //
+    // It used to be decided by `user.merchantId`, a claim only an API-key
+    // principal carries. A user's access token has no such claim, so the
+    // comparison was `undefined !== merchantId` for every human client:
+    // always true, always refused, and silently, because the only account
+    // anyone tested with was also an admin and took the bypass.
+    //
+    // Ownership is a fact about the merchant, so it is read from the
+    // merchant context — the same question the refund path asks.
+    const allowed =
+      user.permissions.includes('admin:*') ||
+      user.merchantId === merchantId ||
+      (user.kind === 'user' && (await this.merchants.mayActFor(merchantId, user.id)));
+
+    if (!allowed) {
       throw new WsException('Not allowed to subscribe to this merchant');
     }
 

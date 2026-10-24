@@ -159,6 +159,20 @@ export class MerchantService {
   }
 
   /**
+   * The single answer to "may this user act for this merchant?".
+   *
+   * Three places had their own copy of the rule and they had already
+   * drifted apart, which is how the refund path ended up checking
+   * something else entirely. The day a merchant grows staff accounts or
+   * delegated roles, this is the only function that learns about it.
+   */
+  async mayActFor(merchantId: string, userId: string): Promise<boolean> {
+    const merchant = await this.require(merchantId);
+
+    return merchant.ownerUserId === userId;
+  }
+
+  /**
    * Expires every validator a merchant change can be observed through,
    * once the change is durable.
    *
@@ -184,6 +198,7 @@ export class MerchantService {
   }
 
   private assertOwnership(merchant: Merchant, actorUserId: string): void {
+    // Same rule as `mayActFor`, applied to an aggregate already loaded.
     if (merchant.ownerUserId !== actorUserId) {
       throw new ForbiddenError('You do not own this merchant', 'MERCHANT_FOREIGN', {
         merchantId: merchant.id,
