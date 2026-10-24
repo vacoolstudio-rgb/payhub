@@ -11,7 +11,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { CursorPage } from '@payhub/kernel';
 import { HttpCache, IdempotencyInterceptor, PrincipalQuota } from '@payhub/redis';
@@ -44,6 +44,11 @@ import {
   PaymentStatsQueryDto,
   RefundPaymentDto,
 } from './dto/payment.dto.js';
+import {
+  PaymentPageDto,
+  PaymentResponseDto,
+  PaymentStatsResponseDto,
+} from './dto/payment-response.dto.js';
 
 /**
  * Public REST surface for payments.
@@ -64,6 +69,7 @@ export class PaymentController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @ApiCreatedResponse({ type: PaymentResponseDto })
   // Per caller, not per address. The global throttle is a flood guard
   // that runs before authentication; this is the merchant's own budget,
   // and a bucket lets them settle a batch in a burst without being
@@ -105,6 +111,7 @@ export class PaymentController {
   }
 
   @Get()
+  @ApiOkResponse({ type: PaymentPageDto })
   // Scoped to whatever the caller is actually allowed to see, so one
   // merchant's traffic never invalidates another's validator.
   @HttpCache({
@@ -150,6 +157,7 @@ export class PaymentController {
   }
 
   @Get('stats')
+  @ApiOkResponse({ type: PaymentStatsResponseDto })
   // A `GROUP BY` over a month that a dashboard asks for on every render.
   // The figures only move when a payment does, so a poll that finds
   // nothing new costs one Redis read instead of the aggregate.
@@ -180,6 +188,7 @@ export class PaymentController {
   }
 
   @Get(':paymentId')
+  @ApiOkResponse({ type: PaymentResponseDto })
   // The canonical poll: an integrator asks "has it settled yet?" in a
   // loop. Until it has, every answer is a 304 that never reaches Postgres.
   @HttpCache({ scopes: (ctx) => [PaymentScopes.one(ctx.params['paymentId'] ?? '')] })
@@ -207,6 +216,7 @@ export class PaymentController {
   // Tighter than creating one: a refund moves money back out, and no
   // legitimate integration issues them in bursts.
   @PrincipalQuota({ name: 'payment-refund', capacity: 20, refillPerSecond: 0.2 })
+  @ApiOkResponse({ type: PaymentResponseDto })
   @Post(':paymentId/refund')
   @RequirePermissions(Permission.PaymentRefund)
   @Idempotent({ required: true })
@@ -232,6 +242,7 @@ export class PaymentController {
     );
   }
 
+  @ApiOkResponse({ type: PaymentResponseDto })
   @Post(':paymentId/cancel')
   @RequirePermissions(Permission.PaymentCancel)
   @ApiOperation({ summary: 'Cancel a payment that has not been captured yet' })

@@ -1,5 +1,5 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   ApiStandardErrors,
   type AuthenticatedPrincipal,
@@ -10,6 +10,10 @@ import { ForbiddenError } from '@payhub/kernel';
 import { HttpCache } from '@payhub/redis';
 import { WalletScopes } from '../application/wallet.cache-scopes.js';
 import { StatementQueryDto } from './dto/wallet.dto.js';
+import {
+  StatementPageDto,
+  WalletBalanceResponseDto,
+} from './dto/wallet-response.dto.js';
 import { Permission } from '../../identity/domain/role.vo.js';
 import {
   type StatementEntryView,
@@ -23,6 +27,7 @@ export class WalletController {
   constructor(private readonly wallets: WalletReadService) {}
 
   @Get()
+  @ApiOkResponse({ type: [WalletBalanceResponseDto] })
   // Polled by the dashboard and pushed to over WebSocket, so almost every
   // poll finds nothing new: the ideal shape for a conditional GET.
   @HttpCache({ scopes: (ctx) => [WalletScopes.ofUser(ctx.principalId)] })
@@ -36,6 +41,7 @@ export class WalletController {
   }
 
   @Get('statement')
+  @ApiOkResponse({ type: StatementPageDto })
   // The expensive one — a keyset page over the ledger. Same version scope
   // as the balances: both change exactly when a posting lands.
   @HttpCache({ scopes: (ctx) => [WalletScopes.ofUser(ctx.principalId)] })
@@ -55,6 +61,7 @@ export class WalletController {
   }
 
   @Get('users/:userId')
+  @ApiOkResponse({ type: [WalletBalanceResponseDto] })
   // Scoped to the user being looked at, not the one looking: the
   // representation changes when *their* balance moves.
   @HttpCache({ scopes: (ctx) => [WalletScopes.ofUser(ctx.params['userId'] ?? '')] })
