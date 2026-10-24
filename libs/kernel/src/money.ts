@@ -31,10 +31,35 @@ export interface MoneyJson {
   readonly currency: string;
 }
 
+/**
+ * The range a `bigint` column can hold — a signed 64-bit integer.
+ *
+ * A JavaScript `BigInt` has no upper bound and Postgres `bigint` does, so
+ * without this the two disagree and the disagreement surfaces at the
+ * furthest possible point from the cause. Measured: an amount of 1e30
+ * passed currency parsing, precision checks, the positivity rule, fee
+ * calculation and the whole command handler, and failed in the database
+ * with `value out of range for type bigint` — returned to the caller as
+ * a 500, from input the caller chose.
+ *
+ * Enforced in the constructor rather than in the parser so every way of
+ * making a `Money` is covered, arithmetic results included.
+ */
+const MIN_MINOR = -(2n ** 63n);
+const MAX_MINOR = 2n ** 63n - 1n;
+
 export class Money extends ValueObject<MoneyProps> {
   readonly currency: Currency;
 
   private constructor(amount: bigint, currency: Currency) {
+    if (amount < MIN_MINOR || amount > MAX_MINOR) {
+      throw new ValidationError(
+        'Amount is larger than this system can represent',
+        { currency: currency.code },
+        'AMOUNT_OUT_OF_RANGE',
+      );
+    }
+
     super({ amount, currency: currency.code });
     this.currency = currency;
   }
@@ -93,8 +118,22 @@ export class Money extends ValueObject<MoneyProps> {
 
     const padded = fractionPart.padEnd(resolved.exponent, '0');
     const minor = BigInt(`${integerPart}${padded}`);
+    const signed = sign === '-' ? -minor : minor;
 
-    return ok(new Money(sign === '-' ? -minor : minor, resolved));
+    // Parsing is the one path that is handed untrusted input, so it
+    // reports the failure as a value rather than letting the
+    // constructor's throw escape as an unhandled error.
+    if (signed < MIN_MINOR || signed > MAX_MINOR) {
+      return err(
+        new ValidationError(
+          'Amount is larger than this system can represent',
+          { amount, currency: resolved.code },
+          'AMOUNT_OUT_OF_RANGE',
+        ),
+      );
+    }
+
+    return ok(new Money(signed, resolved));
   }
 
   static fromJSON(json: MoneyJson): Money {

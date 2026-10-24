@@ -124,6 +124,24 @@ interface PaymentProps {
  * aggregate therefore records intent and outcome, and the saga drives the
  * conversation between the two contexts.
  */
+/**
+ * The largest single payment, in minor units — ten million major units.
+ *
+ * `Money` refuses anything a `bigint` column cannot hold, which stops a
+ * 500 but is a storage fact, not a rule. Measured with that bound alone
+ * in place: a deposit of 92,233,720,368,547,758.07 was accepted, posted
+ * and credited, leaving the wallet one more such payment away from
+ * overflowing the column its balance lives in. A ledger whose invariants
+ * depend on sums staying inside int64 needs a limit well below int64,
+ * and a payments platform needs one regardless.
+ *
+ * A constant rather than configuration on purpose: it is an invariant of
+ * the aggregate and every environment must agree on it. A real
+ * per-merchant limit is a pricing conversation and belongs on the
+ * merchant beside the fee policy, not in an env var.
+ */
+export const MAX_PAYMENT_MINOR = 1_000_000_000_00n;
+
 export class Payment extends AggregateRoot<PaymentId> {
   private constructor(
     id: PaymentId,
@@ -153,6 +171,14 @@ export class Payment extends AggregateRoot<PaymentId> {
       return err(
         new InvalidStateError('Payment amount must be positive', 'INVALID_AMOUNT', {
           amount: input.amount.toJSON(),
+        }),
+      );
+    }
+    if (input.amount.amount > MAX_PAYMENT_MINOR) {
+      return err(
+        new InvalidStateError('Payment amount exceeds the per-payment limit', 'AMOUNT_TOO_LARGE', {
+          amount: input.amount.toJSON(),
+          limitMinor: MAX_PAYMENT_MINOR.toString(),
         }),
       );
     }

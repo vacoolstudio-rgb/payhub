@@ -165,6 +165,23 @@ const PG_CODES: Record<string, { status: HttpStatus; code: string; detail: strin
     code: 'CHECK_VIOLATION',
     detail: 'A database invariant rejected the write',
   },
+  // Class 22 — data exception. These are rejections of the *value*, so
+  // they are the caller's input and not a server fault, however deep in
+  // the stack they surface. Reaching one means an application-level
+  // check is missing, which is worth fixing at the source; answering 500
+  // in the meantime turns a bad request into a page for whoever is on
+  // call. `Money` now bounds itself to this range, so 22003 should be
+  // unreachable through the payment path — this is the floor under it.
+  '22003': {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    code: 'NUMERIC_OUT_OF_RANGE',
+    detail: 'A numeric value is outside the range this system can store',
+  },
+  '22P02': {
+    status: HttpStatus.BAD_REQUEST,
+    code: 'INVALID_TEXT_REPRESENTATION',
+    detail: 'A value was not in the format its column expects',
+  },
   '40001': {
     status: HttpStatus.CONFLICT,
     code: 'SERIALIZATION_FAILURE',

@@ -181,4 +181,43 @@ describe('Currency', () => {
   it('is interned, so equality is cheap', () => {
     expect(Currency.of('usd')).toBe(Currency.of('USD'));
   });
+
+  /**
+   * The bound exists because the storage has one and `BigInt` does not.
+   *
+   * Measured before it was added: an amount of 1e30 passed currency
+   * parsing, the precision rule, the positivity rule, fee calculation and
+   * the whole command handler, and failed in Postgres with "value out of
+   * range for type bigint" — delivered to the caller as a 500 for input
+   * the caller chose.
+   */
+  describe('the range a bigint column can hold', () => {
+    const MAX = 9_223_372_036_854_775_807n;
+
+    it('accepts the largest storable amount', () => {
+      const result = Money.parseMajor('92233720368547758.07', 'USD');
+
+      expect(result.isOk()).toBe(true);
+      expect(result.unwrap().amount).toBe(MAX);
+    });
+
+    it('refuses one minor unit more, as a value rather than a throw', () => {
+      const result = Money.parseMajor('92233720368547758.08', 'USD');
+
+      expect(result.isErr()).toBe(true);
+      expect(result.isErr() && result.error).toMatchObject({ code: 'AMOUNT_OUT_OF_RANGE' });
+    });
+
+    it('refuses an absurd amount rather than letting the database do it', () => {
+      expect(Money.parseMajor('1000000000000000000000000000000.00', 'USD').isErr()).toBe(true);
+    });
+
+    it('refuses it on the trusted path too, where there is no Result to return', () => {
+      expect(() => Money.fromMinor((MAX + 1n).toString(), 'USD')).toThrow();
+    });
+
+    it('still accepts an ordinary amount', () => {
+      expect(Money.parseMajor('10.50', 'USD').unwrap().amount).toBe(1050n);
+    });
+  });
 });

@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Money } from '@payhub/kernel';
-import { Payment, PaymentDirection, PaymentId, PaymentStatus } from './payment.aggregate.js';
+import {
+  MAX_PAYMENT_MINOR,
+  Payment,
+  PaymentDirection,
+  PaymentId,
+  PaymentStatus,
+} from './payment.aggregate.js';
 
 const MERCHANT = '33333333-3333-4333-8333-333333333333';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -205,5 +211,48 @@ describe('Payment', () => {
     }).unwrap();
 
     expect(transfer.counterpartyUserId).toBe(OTHER);
+  });
+
+  /**
+   * A limit the business sets, not one the column forces.
+   *
+   * `Money` refuses what a bigint cannot hold, and with only that in
+   * place a deposit of 92,233,720,368,547,758.07 was accepted end to end
+   * and credited — leaving the wallet one more such payment away from
+   * overflowing its own balance column. The ledger's invariants assume
+   * sums stay inside int64, so the per-payment limit has to sit well
+   * below it.
+   */
+  describe('per-payment limit', () => {
+    const initiate = (minor: bigint) =>
+      Payment.initiate({
+        id: PaymentId.create(),
+        merchantId: MERCHANT,
+        userId: USER,
+        direction: PaymentDirection.Deposit,
+        amount: Money.fromMinor(minor, 'USD'),
+        fee: Money.fromMajor('0.00', 'USD'),
+        method: 'card',
+        reference: 'order-1',
+      });
+
+    it('accepts a payment at the limit', () => {
+      expect(initiate(MAX_PAYMENT_MINOR).isOk()).toBe(true);
+    });
+
+    it('refuses one minor unit over it', () => {
+      const result = initiate(MAX_PAYMENT_MINOR + 1n);
+
+      expect(result.isErr()).toBe(true);
+      expect(result.isErr() && result.error).toMatchObject({ code: 'AMOUNT_TOO_LARGE' });
+    });
+
+    it('keeps the limit far enough below the column to survive a full wallet', () => {
+      const int64Max = 9_223_372_036_854_775_807n;
+
+      // A wallet must be able to hold a great many payments at the
+      // limit before its own bigint column is in danger.
+      expect(int64Max / MAX_PAYMENT_MINOR).toBeGreaterThan(1_000_000n);
+    });
   });
 });
