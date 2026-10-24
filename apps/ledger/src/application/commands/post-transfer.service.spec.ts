@@ -13,6 +13,7 @@ import {
   type WalletRepository,
 } from '../../domain/wallet/wallet.repository.js';
 import { PostTransferService } from './post-transfer.service.js';
+import { appConfig } from '@payhub/config';
 
 const ALICE = '11111111-1111-4111-8111-111111111111';
 const BOB = '22222222-2222-4222-8222-222222222222';
@@ -86,6 +87,12 @@ class FakeWalletRepository implements WalletRepository {
   }
 }
 
+const TEST_APP_CONFIG = {
+  serviceName: 'payhub-test',
+  serviceVersion: '0.0.0-test',
+  nodeEnv: 'test',
+} as never;
+
 describe('PostTransferService', () => {
   let service: PostTransferService;
   let wallets: FakeWalletRepository;
@@ -106,10 +113,8 @@ describe('PostTransferService', () => {
         { provide: WALLET_REPOSITORY, useValue: wallets },
         { provide: JOURNAL_REPOSITORY, useValue: journal },
         { provide: OutboxPublisher, useValue: outbox },
-        {
-          provide: MetricsService,
-          useValue: { ledgerPostings: { inc: vi.fn() } },
-        },
+        { provide: appConfig.KEY, useValue: TEST_APP_CONFIG },
+        MetricsService,
       ],
     }).compile();
 

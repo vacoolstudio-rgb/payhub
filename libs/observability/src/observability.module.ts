@@ -9,6 +9,8 @@ import { RedisHealthIndicator } from './health/redis.health.js';
 import { MetricsController } from './metrics/metrics.controller.js';
 import { MetricsInterceptor } from './metrics/metrics.interceptor.js';
 import { MetricsService } from './metrics/metrics.service.js';
+import { TransactionMetricsObserver } from './metrics/transaction-metrics.observer.js';
+import { TRANSACTION_OBSERVER } from '@payhub/persistence';
 import { LoggerModule } from './logging/logger.module.js';
 import {
   DEFAULT_HEALTH_DEPENDENCIES,
@@ -53,11 +55,22 @@ import {
   providers: [
     MetricsService,
     MetricsInterceptor,
+    // Lets `TransactionManager` report its timings without persistence
+    // having to import this library back.
+    TransactionMetricsObserver,
+    { provide: TRANSACTION_OBSERVER, useExisting: TransactionMetricsObserver },
     RedisHealthIndicator,
     OutboxHealthIndicator,
     { provide: HEALTH_DEPENDENCIES, useValue: new Set(DEFAULT_HEALTH_DEPENDENCIES) },
   ],
-  exports: [ClsModule, LoggerModule, TerminusModule, MetricsService, MetricsInterceptor],
+  exports: [
+    ClsModule,
+    LoggerModule,
+    TerminusModule,
+    MetricsService,
+    MetricsInterceptor,
+    TRANSACTION_OBSERVER,
+  ],
 })
 export class ObservabilityModule {
   /**

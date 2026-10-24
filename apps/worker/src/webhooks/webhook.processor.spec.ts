@@ -7,6 +7,7 @@ import { verifyWebhookSignature } from '@payhub/shared';
 import type { WebhookDeliveryJob } from '@payhub/queue';
 import { WebhookDeliveryRepository } from './webhook-delivery.repository.js';
 import { WebhookProcessor } from './webhook.processor.js';
+import { appConfig } from '@payhub/config';
 
 const SECRET = 'whsec_test';
 
@@ -31,6 +32,12 @@ function respond(status: number, body = ''): Response {
   return new Response(body, { status });
 }
 
+const TEST_APP_CONFIG = {
+  serviceName: 'payhub-test',
+  serviceVersion: '0.0.0-test',
+  nodeEnv: 'test',
+} as never;
+
 describe('WebhookProcessor', () => {
   let processor: WebhookProcessor;
   let deliveries: { markAttempt: ReturnType<typeof vi.fn> };
@@ -45,10 +52,8 @@ describe('WebhookProcessor', () => {
       providers: [
         WebhookProcessor,
         { provide: WebhookDeliveryRepository, useValue: deliveries },
-        {
-          provide: MetricsService,
-          useValue: { webhookDeliveries: { inc: vi.fn() } },
-        },
+        { provide: appConfig.KEY, useValue: TEST_APP_CONFIG },
+        MetricsService,
         {
           provide: workerConfig.KEY,
           useValue: {

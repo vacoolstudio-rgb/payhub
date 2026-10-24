@@ -18,6 +18,10 @@ import { AdvisoryLockService } from './locks/advisory-lock.service.js';
 import { OutboxMessageEntity } from './outbox/outbox-message.entity.js';
 import { OutboxRepository } from './outbox/outbox.repository.js';
 import { TransactionManager } from './transaction.manager.js';
+import {
+  TRANSACTION_OBSERVER,
+  type TransactionObserver,
+} from './transaction-observer.port.js';
 import { TransactionalContext } from './transactional.decorator.js';
 import { createDataSource } from './typeorm/data-source.factory.js';
 
@@ -76,9 +80,17 @@ export class PersistenceModule implements OnModuleInit, OnApplicationShutdown {
       },
       {
         provide: TransactionManager,
-        inject: [DataSource, ClsService],
-        useFactory: (dataSource: DataSource, cls: ClsService) =>
-          new TransactionManager(dataSource, cls),
+        // The observer is listed here as well as decorated on the
+        // constructor: a `useFactory` builds the instance by hand, so
+        // `@Optional() @Inject(...)` on a parameter the factory never
+        // passes does nothing at all. Optional because a service with no
+        // metrics wired must still be able to open a transaction.
+        inject: [DataSource, ClsService, { token: TRANSACTION_OBSERVER, optional: true }],
+        useFactory: (
+          dataSource: DataSource,
+          cls: ClsService,
+          observer?: TransactionObserver,
+        ) => new TransactionManager(dataSource, cls, observer),
       },
       OutboxRepository,
       InboxRepository,

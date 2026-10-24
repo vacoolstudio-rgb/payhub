@@ -1,11 +1,21 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ClsModule, ClsService } from 'nestjs-cls';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { Money } from '@payhub/kernel';
 import { OutboxPublisher } from '@payhub/messaging';
+import { appConfig } from '@payhub/config';
 import { MetricsService } from '@payhub/observability';
 import {
   TransactionManager,
@@ -37,6 +47,12 @@ import { TypeOrmWalletRepository } from '../apps/ledger/src/infrastructure/persi
  * TypeScript. An in-memory fake would happily "pass" a double-spend test
  * that the real engine fails.
  */
+const TEST_APP_CONFIG = {
+  serviceName: 'payhub-test',
+  serviceVersion: '0.0.0-test',
+  nodeEnv: 'test',
+} as never;
+
 describe('Ledger (integration)', () => {
   let container: StartedPostgreSqlContainer;
   let dataSource: DataSource;
@@ -46,9 +62,18 @@ describe('Ledger (integration)', () => {
 
   // Held as named functions rather than reached through the service, so
   // assertions reference a value instead of an unbound method.
-  const trialBalanceSet = vi.fn();
-  const driftSet = vi.fn();
-  const healedInc = vi.fn();
+  /**
+   * Spies on the real metrics, rather than a stub standing in for them.
+   *
+   * A partial stub only holds the properties someone remembered to put
+   * in it, so the first write to a metric added later reads a property
+   * that is not there. Spying leaves the real registry in place: the
+   * assertions below still see every call, and a metric this suite has
+   * never heard of still behaves.
+   */
+  let trialBalanceSet: MockInstance<MetricsService['trialBalance']['set']>;
+  let driftSet: MockInstance<MetricsService['reconciliationDrift']['set']>;
+  let healedInc: MockInstance<MetricsService['reconciliationHealed']['inc']>;
 
   const ALICE = randomUUID();
   const BOB = randomUUID();
@@ -105,16 +130,17 @@ describe('Ledger (integration)', () => {
         { provide: JOURNAL_REPOSITORY, useClass: TypeOrmJournalRepository },
         { provide: OutboxPublisher, useValue: { publish: vi.fn().mockResolvedValue('id') } },
         {
-          provide: MetricsService,
-          useValue: {
-            ledgerPostings: { inc: vi.fn() },
-            reconciliationDrift: { set: driftSet },
-            reconciliationHealed: { inc: healedInc },
-            trialBalance: { set: trialBalanceSet },
-          },
+          provide: appConfig.KEY,
+          useValue: TEST_APP_CONFIG,
         },
+        MetricsService,
       ],
     }).compile();
+
+    const metrics = moduleRef.get(MetricsService);
+    trialBalanceSet = vi.spyOn(metrics.trialBalance, 'set');
+    driftSet = vi.spyOn(metrics.reconciliationDrift, 'set');
+    healedInc = vi.spyOn(metrics.reconciliationHealed, 'inc');
 
     TransactionalContext.bind(moduleRef.get(TransactionManager));
     service = moduleRef.get(PostTransferService);
@@ -388,10 +414,67 @@ describe('Ledger (integration)', () => {
       // An unbalanced CHF posting exists, so a sweep that looked at CHF
       // at all must have set a non-zero trial balance for it.
       const currencies = trialBalanceSet.mock.calls.map(
-        ([labels]) => (labels as { currency: string }).currency,
+        // `set` is overloaded (value, or labels then value); the labelled
+        // form is the one this job uses.
+        ([labels]) => (labels as unknown as { currency: string }).currency,
       );
 
       expect(currencies).toContain('CHF');
+    });
+
+    /**
+     * The repair half of the job, which nothing exercised.
+     *
+     * The projection is a cache of the journal: `ledger.wallets` is
+     * derived, the postings are the record. So a divergence is fixable
+     * without moving money — rewrite the cache from the source. The
+     * counter that says how often this happens was written by the job
+     * and asserted by nobody, which is how a repair path rots.
+     */
+    it('rewrites a projection that has drifted from the journal', async () => {
+      await dataSource.query('TRUNCATE ledger.postings, ledger.journal_entries, ledger.wallets CASCADE');
+      await service.execute(deposit(ALICE, '10.00'));
+
+      const [before] = await dataSource.query(
+        'SELECT available_minor::text AS available FROM ledger.wallets WHERE user_id = $1',
+        [ALICE],
+      );
+      await dataSource.query(
+        'UPDATE ledger.wallets SET available_minor = available_minor + 777 WHERE user_id = $1',
+        [ALICE],
+      );
+      healedInc.mockClear();
+
+      await reconciliation.scheduled();
+
+      const [after] = await dataSource.query(
+        'SELECT available_minor::text AS available FROM ledger.wallets WHERE user_id = $1',
+        [ALICE],
+      );
+
+      expect(after.available).toBe(before.available);
+      expect(healedInc).toHaveBeenCalledWith({ currency: 'USD' }, 1);
+    });
+
+    /** Audit mode: report the divergence, touch nothing. */
+    it('leaves the projection alone when healing is off', async () => {
+      await dataSource.query('TRUNCATE ledger.postings, ledger.journal_entries, ledger.wallets CASCADE');
+      await service.execute(deposit(ALICE, '10.00'));
+      await dataSource.query(
+        'UPDATE ledger.wallets SET available_minor = available_minor + 777 WHERE user_id = $1',
+        [ALICE],
+      );
+
+      const report = await reconciliation.reconcile('USD', false);
+
+      const [row] = await dataSource.query(
+        'SELECT available_minor::text AS available FROM ledger.wallets WHERE user_id = $1',
+        [ALICE],
+      );
+
+      expect(report.driftingWallets).toHaveLength(1);
+      expect(report.healed).toBe(0);
+      expect(row.available).toBe('1777');
     });
 
     /**
@@ -415,7 +498,9 @@ describe('Ledger (integration)', () => {
       await expect(reconciliation.scheduled()).resolves.toBeUndefined();
 
       const reported = trialBalanceSet.mock.calls.map(
-        ([labels]) => (labels as { currency: string }).currency,
+        // `set` is overloaded (value, or labels then value); the labelled
+        // form is the one this job uses.
+        ([labels]) => (labels as unknown as { currency: string }).currency,
       );
       expect(reported).toEqual(['USD']);
     });

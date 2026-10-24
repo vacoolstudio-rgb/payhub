@@ -29,6 +29,9 @@ describe('Outbox & inbox (integration)', () => {
   let inbox: InboxRepository;
   let transactions: TransactionManager;
 
+  /** What the observer port was told, in order. */
+  const recorded: Array<{ isolation: string; outcome: string; seconds: number }> = [];
+
   const append = (overrides: Partial<Parameters<OutboxRepository['append']>[0]> = {}) =>
     outbox.append({
       topic: 'payhub.payments.events.v1',
@@ -75,7 +78,11 @@ describe('Outbox & inbox (integration)', () => {
         {
           provide: TransactionManager,
           inject: [DataSource, ClsService],
-          useFactory: (ds: DataSource, cls: ClsService) => new TransactionManager(ds, cls),
+          useFactory: (ds: DataSource, cls: ClsService) =>
+            new TransactionManager(ds, cls, {
+              record: (isolation, outcome, seconds) =>
+                void recorded.push({ isolation, outcome, seconds }),
+            }),
         },
         OutboxRepository,
         InboxRepository,
@@ -410,6 +417,38 @@ describe('Outbox & inbox (integration)', () => {
    * requirement: happen once the write is durable, and not at all if it
    * is not.
    */
+  /**
+   * Transaction duration is what explains the two failures that
+   * actually hurt — a long transaction holding a connection the pool
+   * needs, and an ALTER TABLE parked behind it with every later query
+   * queued behind that. The histogram existed and nothing wrote to it.
+   */
+  describe('duration reporting', () => {
+    it('reports a committed transaction', async () => {
+      await transactions.run(async () => append());
+
+      expect(recorded.at(-1)).toMatchObject({ outcome: 'commit', isolation: 'READ COMMITTED' });
+      expect(recorded.at(-1)!.seconds).toBeGreaterThan(0);
+    });
+
+    it('reports a rolled back one too, which is the slow case worth seeing', async () => {
+      await expect(
+        transactions.run(async () => {
+          await append();
+          throw new Error('no');
+        }),
+      ).rejects.toThrow();
+
+      expect(recorded.at(-1)).toMatchObject({ outcome: 'rollback' });
+    });
+
+    it('labels the isolation level it actually ran at', async () => {
+      await transactions.run(async () => append(), { isolation: 'REPEATABLE READ' });
+
+      expect(recorded.at(-1)).toMatchObject({ isolation: 'REPEATABLE READ' });
+    });
+  });
+
   describe('after-commit effects', () => {
     const rowCount = async (): Promise<number> => {
       const [row] = (await dataSource.query(

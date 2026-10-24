@@ -21,6 +21,7 @@ import {
 } from '../../domain/payment.repository.js';
 import { PAYMENT_UPDATED_EVENT } from '../payment.events.js';
 import { PaymentSaga } from './payment.saga.js';
+import { appConfig } from '@payhub/config';
 
 const MERCHANT = '33333333-3333-4333-8333-333333333333';
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -93,6 +94,12 @@ const userLine = (major: string): LedgerPostingLine => ({
   amount: Money.fromMajor(major, 'USD').toJSON(),
 });
 
+const TEST_APP_CONFIG = {
+  serviceName: 'payhub-test',
+  serviceVersion: '0.0.0-test',
+  nodeEnv: 'test',
+} as never;
+
 describe('PaymentSaga', () => {
   let saga: PaymentSaga;
   let payments: FakePaymentRepository;
@@ -114,10 +121,8 @@ describe('PaymentSaga', () => {
         PaymentSaga,
         { provide: PAYMENT_REPOSITORY, useValue: payments },
         { provide: OutboxPublisher, useValue: outbox },
-        {
-          provide: MetricsService,
-          useValue: { paymentsTotal: { inc: vi.fn() }, paymentAmount: { inc: vi.fn() } },
-        },
+        { provide: appConfig.KEY, useValue: TEST_APP_CONFIG },
+        MetricsService,
         { provide: EventEmitter2, useValue: events },
       ],
     }).compile();

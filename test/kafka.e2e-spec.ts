@@ -80,6 +80,12 @@ class ProbeHandlers {
   }
 }
 
+const TEST_APP_CONFIG = {
+  serviceName: 'payhub-test',
+  serviceVersion: '0.0.0-test',
+  nodeEnv: 'test',
+} as never;
+
 describe('Kafka retries & dead-letter queue (integration)', () => {
   let container: StartedKafkaContainer;
   let moduleRef: TestingModule;
@@ -182,7 +188,19 @@ describe('Kafka retries & dead-letter queue (integration)', () => {
           provide: TransactionManager,
           useValue: { run: async (fn: () => Promise<unknown>) => fn() },
         },
-        { provide: MetricsService, useValue: { messagesProcessed: { inc: () => undefined } } },
+        /**
+         * The real service, not a hand-written partial.
+         *
+         * It was a partial, holding only the one counter the consumer
+         * was known to touch — and a later change added a second metric
+         * the stub did not have. The consumer crashed on an undefined
+         * property *inside a kafkajs listener*, which takes the runner
+         * down with it: nine tests timed out at once and none of them
+         * named the cause. A stub shaped by hand drifts from the class
+         * it stands in for, silently, and a registry is cheap.
+         */
+        { provide: appConfig.KEY, useValue: TEST_APP_CONFIG },
+        MetricsService,
       ],
     }).compile();
 

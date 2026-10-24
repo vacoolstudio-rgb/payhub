@@ -1,8 +1,12 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { DataSource, type EntityManager, type QueryRunner } from 'typeorm';
 import { ConcurrencyError } from '@payhub/kernel';
 import { backoffDelay } from '@payhub/shared';
+import {
+  TRANSACTION_OBSERVER,
+  type TransactionObserver,
+} from './transaction-observer.port.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export type IsolationLevel =
@@ -50,6 +54,9 @@ export class TransactionManager {
   constructor(
     private readonly dataSource: DataSource,
     private readonly cls: ClsService,
+    @Optional()
+    @Inject(TRANSACTION_OBSERVER)
+    private readonly observer?: TransactionObserver,
   ) {}
 
   /** The manager repositories must use: ambient transaction, else the pool. */
@@ -157,11 +164,19 @@ export class TransactionManager {
     throw lastError;
   }
 
+  /**
+   * Timed, because transaction duration is what explains the two
+   * failures that actually hurt: a long transaction holds a connection
+   * the pool needs, and it parks an `ALTER TABLE` behind it with every
+   * subsequent query queued behind that.
+   */
   private async executeOnce<T>(
     runner: QueryRunner,
     work: (manager: EntityManager) => Promise<T>,
     options: { isolation: IsolationLevel; readOnly: boolean },
   ): Promise<T> {
+    const startedAt = process.hrtime.bigint();
+    const elapsed = (): number => Number(process.hrtime.bigint() - startedAt) / 1e9;
     await runner.connect();
     await runner.startTransaction(options.isolation);
 
@@ -179,6 +194,7 @@ export class TransactionManager {
       });
 
       await runner.commitTransaction();
+      this.observer?.record(options.isolation, 'commit', elapsed());
 
       // After the commit, and deliberately not awaited inside it: a slow
       // Redis must not hold a Postgres connection open.
@@ -186,6 +202,7 @@ export class TransactionManager {
       return result;
     } catch (error) {
       await runner.rollbackTransaction();
+      this.observer?.record(options.isolation, 'rollback', elapsed());
       throw error;
     }
   }

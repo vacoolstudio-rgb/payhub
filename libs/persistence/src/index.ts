@@ -2,6 +2,7 @@ export * from './typeorm/transformers.js';
 export * from './typeorm/snake-naming.strategy.js';
 export * from './typeorm/data-source.factory.js';
 export * from './transaction.manager.js';
+export * from './transaction-observer.port.js';
 export * from './transactional.decorator.js';
 export * from './base.repository.js';
 export * from './locks/advisory-lock.service.js';

@@ -101,6 +101,7 @@ export class KafkaConsumerService implements OnApplicationBootstrap, OnApplicati
     });
 
     await this.consumer.connect();
+    this.reportLag();
 
     const plan = this.topicPlan();
 
@@ -128,6 +129,65 @@ export class KafkaConsumerService implements OnApplicationBootstrap, OnApplicati
     });
 
     this.running = true;
+  }
+
+  /**
+   * Publishes consumer lag, which is the first number anyone asks for.
+   *
+   * The gauge existed and nothing ever wrote to it, so the panel read
+   * zero whether the ledger was keeping up or an hour behind — and a
+   * consumer falling behind is how payments quietly stop settling while
+   * every service still reports healthy.
+   *
+   * Taken from `END_BATCH_PROCESS` rather than polled from the broker:
+   * kafkajs already knows the distance between the batch it just
+   * finished and the partition's high watermark, so this costs nothing
+   * and cannot itself fall behind.
+   */
+  private reportLag(): void {
+    const consumer = this.consumer;
+    if (!consumer) {
+      return;
+    }
+
+    consumer.on(consumer.events.END_BATCH_PROCESS, ({ payload }) => {
+      this.observe(() =>
+        this.metrics.kafkaConsumerLag.set(
+          {
+            topic: payload.topic,
+            partition: String(payload.partition),
+            group: this.config.consumerGroup,
+          },
+          Number(payload.offsetLag ?? 0),
+        ),
+      );
+    });
+
+    // A revoked partition's last reading would otherwise sit there
+    // forever, reporting lag on a partition this pod no longer owns.
+    consumer.on(consumer.events.GROUP_JOIN, () => {
+      this.observe(() => this.metrics.kafkaConsumerLag.reset());
+    });
+  }
+
+  /**
+   * Runs an instrumentation write that must never matter.
+   *
+   * These listeners execute inside kafkajs's runner, and a throw from one
+   * crashes the consumer: the group rebalances, the pod stops consuming,
+   * and payments stop being processed. Trading a gauge for the data path
+   * is never the right trade, so the write is contained and the failure
+   * is logged once rather than propagated.
+   */
+  private observe(write: () => void): void {
+    try {
+      write();
+    } catch (error) {
+      this.logger.warn(
+        { err: error },
+        'Failed to record consumer lag; message processing is unaffected',
+      );
+    }
   }
 
   async onApplicationShutdown(): Promise<void> {
