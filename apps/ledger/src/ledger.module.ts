@@ -15,16 +15,13 @@ import { JOURNAL_REPOSITORY } from './domain/ledger/journal-entry.repository.js'
 import { TransferPlanner } from './domain/ledger/transfer-planner.service.js';
 import { WALLET_REPOSITORY } from './domain/wallet/wallet.repository.js';
 import { LedgerCommandConsumer } from './infrastructure/messaging/ledger-command.consumer.js';
-import { InitLedgerSchema1740000000000 } from './infrastructure/migrations/1740000000000-InitLedgerSchema.js';
-import { DropRedundantWalletIndex1740000000004 } from './infrastructure/migrations/1740000000004-DropRedundantWalletIndex.js';
-import { JournalEntriesAppendOnly1740000000005 } from './infrastructure/migrations/1740000000005-JournalEntriesAppendOnly.js';
-import { ReversalForeignKeyIndexes1740000000009 } from './infrastructure/migrations/1740000000009-ReversalForeignKeyIndexes.js';
 import { JournalEntryEntity } from './infrastructure/persistence/entities/journal-entry.entity.js';
 import { PostingEntity } from './infrastructure/persistence/entities/posting.entity.js';
 import { WalletEntity } from './infrastructure/persistence/entities/wallet.entity.js';
 import { TypeOrmJournalRepository } from './infrastructure/persistence/repositories/typeorm-journal.repository.js';
 import { TypeOrmWalletRepository } from './infrastructure/persistence/repositories/typeorm-wallet.repository.js';
 import { LedgerGrpcController } from './presentation/grpc/ledger.grpc.controller.js';
+import { ledgerMigrations } from './infrastructure/migrations/index.js';
 
 /**
  * The ledger service.
@@ -54,12 +51,7 @@ import { LedgerGrpcController } from './presentation/grpc/ledger.grpc.controller
       schema: 'ledger',
       applicationName: 'payhub-ledger',
       entities: [WalletEntity, JournalEntryEntity, PostingEntity],
-      migrations: [
-        InitLedgerSchema1740000000000,
-        DropRedundantWalletIndex1740000000004,
-        JournalEntriesAppendOnly1740000000005,
-        ReversalForeignKeyIndexes1740000000009,
-      ],
+      migrations: ledgerMigrations,
     }),
     MessagingModule.forRoot({ consumer: true, relay: true }),
   ],

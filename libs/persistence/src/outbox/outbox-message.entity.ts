@@ -12,7 +12,19 @@ export type OutboxStatus = 'pending' | 'publishing' | 'published' | 'dead';
  * is what actually ships.
  */
 @Entity({ name: 'outbox_messages' })
-@Index('ix_outbox_dispatch', ['status', 'availableAt'])
+/**
+ * The relay's dispatch index, declared the way the migrations build it.
+ *
+ * This said `['status', 'availableAt']` — a plain composite index that
+ * has never existed in any database: the migrations create a partial
+ * index on `(available_at, created_at)` instead. Nothing caught the
+ * divergence because the schema comes from migrations and never from
+ * `synchronize`, which leaves the decorator as documentation that was
+ * quietly wrong about the one index whose shape matters most.
+ */
+@Index('ix_outbox_dispatch_v2', ['availableAt', 'createdAt'], {
+  where: `status IN ('pending', 'publishing')`,
+})
 @Index('ix_outbox_aggregate', ['aggregateType', 'aggregateId'])
 export class OutboxMessageEntity {
   /** Also the Kafka message id — consumers deduplicate on it. */

@@ -4,6 +4,7 @@ import { CounterpartyKeysetIndex1740000000003 } from './1740000000003-Counterpar
 import { CapturingRequiresTransfer1740000000006 } from './1740000000006-CapturingRequiresTransfer.js';
 import { RefundTransferId1740000000007 } from './1740000000007-RefundTransferId.js';
 import { IdempotencyKeyUnique1740000000008 } from './1740000000008-IdempotencyKeyUnique.js';
+import { OutboxDispatchIndexPredicate1740000000010 } from './1740000000010-OutboxDispatchIndexPredicate.js';
 
 /**
  * Migrations for the `payhub` schema.
@@ -21,4 +22,5 @@ export const apiMigrations = [
   CapturingRequiresTransfer1740000000006,
   RefundTransferId1740000000007,
   IdempotencyKeyUnique1740000000008,
+  OutboxDispatchIndexPredicate1740000000010,
 ];

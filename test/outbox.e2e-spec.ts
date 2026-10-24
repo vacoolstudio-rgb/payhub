@@ -12,7 +12,7 @@ import {
   TransactionManager,
   createDataSource,
 } from '@payhub/persistence';
-import { InitLedgerSchema1740000000000 } from '../apps/ledger/src/infrastructure/migrations/1740000000000-InitLedgerSchema.js';
+import { ledgerMigrations } from '../apps/ledger/src/infrastructure/migrations/index.js';
 
 /**
  * Outbox and inbox against a real Postgres.
@@ -63,7 +63,7 @@ describe('Outbox & inbox (integration)', () => {
       },
       schema: 'ledger',
       entities: [OutboxMessageEntity, ProcessedMessageEntity],
-      migrations: [InitLedgerSchema1740000000000],
+      migrations: ledgerMigrations,
       applicationName: 'payhub-outbox-test',
     });
 
@@ -139,6 +139,64 @@ describe('Outbox & inbox (integration)', () => {
       const messageId = randomUUID();
 
       expect(await append({ messageId })).toBe(messageId);
+    });
+  });
+
+  /**
+   * The relay's poll has to reach its index.
+   *
+   * `ix_outbox_dispatch` was partial on `status = 'pending'` while the
+   * poll reads `status IN ('pending', 'publishing')` — it has to, since
+   * a row a crashed relay left in `publishing` must be picked up again.
+   * A partial index is only usable when the query's predicate implies
+   * the index's, and `IN (...)` does not imply `= 'pending'`, so the
+   * index was dead and every poll scanned the table.
+   *
+   * Measured on 201 814 rows with a 1 600-row backlog: 6 731 buffers and
+   * 28.4 ms as a sequential scan, 118 buffers and 0.25 ms as an index
+   * scan. The ratio is not the point — what each plan scales with is.
+   * The relay runs this continuously, so a plan that grows with
+   * everything the table has ever held eventually cannot keep up, which
+   * is precisely the failure the outbox pattern exists to prevent.
+   *
+   * A plan assertion rather than a timing one: it fails for the reason
+   * that matters and does not depend on how fast the machine is.
+   */
+  describe('dispatch index', () => {
+    it('serves the poll from an index rather than a table scan', async () => {
+      // The planner only has a choice to make once there is enough to
+      // scan; on a handful of rows every plan is a sequential scan and
+      // the assertion would pass for the wrong reason.
+      await dataSource.query(`
+        INSERT INTO ledger.outbox_messages
+          (id, aggregate_type, aggregate_id, event_type, topic, partition_key,
+           payload, headers, status, attempts, available_at, occurred_at,
+           created_at, published_at)
+        SELECT gen_random_uuid(), 'Payment', gen_random_uuid()::text,
+               'payment.captured.v1', 'payhub.payments.events.v1',
+               gen_random_uuid()::text, '{}'::jsonb, '{}'::jsonb,
+               CASE WHEN i % 500 = 0 THEN 'publishing'
+                    WHEN i % 100 = 0 THEN 'pending'
+                    ELSE 'published' END,
+               0, now() - interval '1 minute', now() - interval '1 minute',
+               now() - interval '1 minute',
+               CASE WHEN i % 100 <> 0 THEN now() END
+          FROM generate_series(1, 40000) AS i
+      `);
+      await dataSource.query('ANALYZE ledger.outbox_messages');
+
+      const plan = (await dataSource.query(`
+        EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+        SELECT id FROM ledger.outbox_messages
+         WHERE status IN ('pending', 'publishing') AND available_at <= now()
+         ORDER BY available_at, created_at
+         LIMIT 100 FOR UPDATE SKIP LOCKED
+      `)) as Array<Record<string, string>>;
+
+      const text = plan.map((row) => Object.values(row)[0]).join('\n');
+
+      expect(text).toContain('ix_outbox_dispatch');
+      expect(text).not.toContain('Seq Scan');
     });
   });
 

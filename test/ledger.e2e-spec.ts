@@ -29,9 +29,7 @@ import { LedgerReconciliationJob } from '../apps/ledger/src/application/jobs/rec
 import { AdvisoryLockService } from '@payhub/persistence';
 import { workerConfig } from '@payhub/config';
 import { WALLET_REPOSITORY } from '../apps/ledger/src/domain/wallet/wallet.repository.js';
-import { InitLedgerSchema1740000000000 } from '../apps/ledger/src/infrastructure/migrations/1740000000000-InitLedgerSchema.js';
-import { DropRedundantWalletIndex1740000000004 } from '../apps/ledger/src/infrastructure/migrations/1740000000004-DropRedundantWalletIndex.js';
-import { JournalEntriesAppendOnly1740000000005 } from '../apps/ledger/src/infrastructure/migrations/1740000000005-JournalEntriesAppendOnly.js';
+import { ledgerMigrations } from '../apps/ledger/src/infrastructure/migrations/index.js';
 import { JournalEntryEntity } from '../apps/ledger/src/infrastructure/persistence/entities/journal-entry.entity.js';
 import { PostingEntity } from '../apps/ledger/src/infrastructure/persistence/entities/posting.entity.js';
 import { WalletEntity } from '../apps/ledger/src/infrastructure/persistence/entities/wallet.entity.js';
@@ -100,11 +98,7 @@ describe('Ledger (integration)', () => {
       },
       schema: 'ledger',
       entities: [WalletEntity, JournalEntryEntity, PostingEntity],
-      migrations: [
-        InitLedgerSchema1740000000000,
-        DropRedundantWalletIndex1740000000004,
-        JournalEntriesAppendOnly1740000000005,
-      ],
+      migrations: ledgerMigrations,
       applicationName: 'payhub-ledger-test',
     });
 
