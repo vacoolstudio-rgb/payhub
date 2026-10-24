@@ -26,6 +26,7 @@ export const appConfig = registerAs('app', () => {
     globalPrefix: env.HTTP_GLOBAL_PREFIX,
     bodyLimit: env.HTTP_BODY_LIMIT,
     shutdownGraceMs: env.SHUTDOWN_GRACE_MS,
+    shutdownDrainDelayMs: env.SHUTDOWN_DRAIN_DELAY_MS,
     requestTimeoutMs: env.REQUEST_TIMEOUT_MS,
     corsOrigins: env.CORS_ORIGINS === '*' ? true : env.CORS_ORIGINS.split(',').map((o) => o.trim()),
     trustProxy: env.TRUST_PROXY,

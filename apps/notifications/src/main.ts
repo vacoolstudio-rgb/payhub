@@ -65,7 +65,10 @@ async function bootstrap(): Promise<void> {
     { inheritAppConfig: true },
   );
 
-  app.enableShutdownHooks();
+  // No `enableShutdownHooks()`: it only registers signal listeners, and
+  // those would close the socket before the drain below could matter.
+  // `app.close()` runs the lifecycle hooks on its own. See
+  // apps/api/src/main.ts for the measurement.
 
   // The shared helper rather than a hand-rolled SIGTERM listener, which is
   // what this was. That version handled only SIGTERM — Ctrl-C went to
@@ -75,6 +78,7 @@ async function bootstrap(): Promise<void> {
   // it, with nothing in the logs to say why.
   installGracefulShutdown(app, {
     graceMs: config.shutdownGraceMs,
+    drainDelayMs: config.shutdownDrainDelayMs,
     beforeClose: () => stopTracing(),
   });
 

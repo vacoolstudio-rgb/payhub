@@ -32,9 +32,14 @@ async function bootstrap(): Promise<void> {
    * A background worker with no readiness endpoint is invisible to the
    * orchestrator: it would be restarted on a whim and never drain cleanly.
    */
-  app.enableShutdownHooks();
+
+  // No `enableShutdownHooks()`: it only registers signal listeners, and
+  // those would close the socket before the drain below could matter.
+  // `app.close()` runs the lifecycle hooks on its own. See
+  // apps/api/src/main.ts for the measurement.
   installGracefulShutdown(app, {
     graceMs: config.shutdownGraceMs,
+    drainDelayMs: config.shutdownDrainDelayMs,
     beforeClose: () => stopTracing(),
   });
 

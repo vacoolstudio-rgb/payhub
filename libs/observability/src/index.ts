@@ -10,3 +10,4 @@ export * from './health/health.controller.js';
 export * from './tracing/tracing.js';
 export * from './graceful-shutdown.js';
 export * from './observability.module.js';
+export * from './health/shutdown-state.service.js';

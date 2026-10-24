@@ -125,13 +125,14 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 2
-          lifecycle:
-            preStop:
-              exec:
-                # Give the endpoints controller time to remove this pod from
-                # the Service before the process starts refusing traffic;
-                # without it a rolling deploy drops in-flight requests.
-                command: ["sleep", "5"]
+          # No preStop sleep. It used to hold the container for five
+          # seconds so the endpoints controller could remove this pod
+          # before the process stopped answering — the right idea, in the
+          # wrong place. The application now does it itself
+          # (SHUTDOWN_DRAIN_DELAY_MS): readiness starts failing on
+          # SIGTERM and the socket stays open for the delay, which also
+          # reports the state instead of merely waiting out the clock,
+          # and holds outside Kubernetes where no preStop hook exists.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -1,9 +1,16 @@
-import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Inject,
+  ServiceUnavailableException,
+  VERSION_NEUTRAL,
+} from '@nestjs/common';
 import {
   DiskHealthIndicator,
   HealthCheck,
   HealthCheckService,
   type HealthIndicatorFunction,
+  type HealthIndicatorResult,
   MemoryHealthIndicator,
   TypeOrmHealthIndicator,
 } from '@nestjs/terminus';
@@ -12,6 +19,7 @@ import { Public } from '@payhub/shared';
 import { RedisHealthIndicator } from './redis.health.js';
 import { OutboxHealthIndicator } from './outbox.health.js';
 import { HEALTH_DEPENDENCIES, type HealthDependency } from './health.dependencies.js';
+import { ShutdownState } from './shutdown-state.service.js';
 
 type Probe = HealthIndicatorFunction;
 
@@ -45,6 +53,7 @@ export class HealthController {
     private readonly disk: DiskHealthIndicator,
     @Inject(HEALTH_DEPENDENCIES)
     private readonly dependencies: ReadonlySet<HealthDependency>,
+    private readonly shutdown: ShutdownState,
   ) {}
 
   /** Keeps a probe only when this service actually has that dependency. */
@@ -68,12 +77,26 @@ export class HealthController {
   @HealthCheck()
   @ApiOperation({ summary: 'Readiness probe — every dependency a request needs' })
   ready() {
-    return this.health.check(
-      this.only([
+    return this.health.check([
+      // First, and before any dependency is touched. A terminating pod
+      // is not ready however healthy Postgres is, and saying so is what
+      // gets it out of the load balancer before the socket closes.
+      () => this.acceptingTraffic(),
+      ...this.only([
         ['postgres', () => this.db.pingCheck('postgres', { timeout: 1_500 })],
         ['redis', () => this.redis.isHealthy('redis')],
       ]),
-    );
+    ]);
+  }
+
+  private async acceptingTraffic(): Promise<HealthIndicatorResult> {
+    if (this.shutdown.isDraining) {
+      throw new ServiceUnavailableException({
+        accepting_traffic: { status: 'down', reason: 'shutting down' },
+      });
+    }
+
+    return { accepting_traffic: { status: 'up' } };
   }
 
   @Public()

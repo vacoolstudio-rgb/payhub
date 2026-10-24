@@ -1,5 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
+import { setTimeout as delay } from 'node:timers/promises';
+import { ShutdownState } from './health/shutdown-state.service.js';
 import { writeSync } from 'node:fs';
 
 /**
@@ -33,6 +35,16 @@ export function fatalExit(context: string, error: unknown): never {
 
 export interface ShutdownOptions {
   readonly graceMs: number;
+  /**
+   * How long to keep serving after readiness starts failing.
+   *
+   * Removing a pod from a Service is asynchronous — the endpoint is
+   * withdrawn and every node rewrites its proxy rules — so for a few
+   * seconds after SIGTERM the orchestrator is still sending work to a
+   * pod that is on its way out. Closing the socket immediately turns
+   * that window into connection errors for whoever is routed there.
+   */
+  readonly drainDelayMs: number;
   readonly logger?: Logger;
   readonly beforeClose?: () => Promise<void>;
 }
@@ -77,6 +89,14 @@ export function installGracefulShutdown(
 
     void (async () => {
       try {
+        // Fail readiness, then wait. Measured before this existed:
+        // `/health/ready` answered 200 as SIGTERM arrived and the socket
+        // refused connections 40 ms later, with no failing probe in
+        // between — nothing ever told the load balancer to stop.
+        app.get(ShutdownState, { strict: false }).beginDraining();
+        logger.log(`Readiness failing; serving for another ${options.drainDelayMs}ms`);
+        await delay(options.drainDelayMs);
+
         await options.beforeClose?.();
         await app.close();
         clearTimeout(watchdog);

@@ -17,6 +17,7 @@ import {
   HEALTH_DEPENDENCIES,
   type HealthDependency,
 } from './health/health.dependencies.js';
+import { ShutdownState } from './health/shutdown-state.service.js';
 
 /**
  * Cross-cutting observability: context propagation, logging, metrics, health.
@@ -61,9 +62,11 @@ import {
     { provide: TRANSACTION_OBSERVER, useExisting: TransactionMetricsObserver },
     RedisHealthIndicator,
     OutboxHealthIndicator,
+    ShutdownState,
     { provide: HEALTH_DEPENDENCIES, useValue: new Set(DEFAULT_HEALTH_DEPENDENCIES) },
   ],
   exports: [
+    ShutdownState,
     ClsModule,
     LoggerModule,
     TerminusModule,

@@ -41,6 +41,7 @@ export const envSchema = z
     HTTP_GLOBAL_PREFIX: z.string().default('api'),
     HTTP_BODY_LIMIT: z.string().default('256kb'),
     SHUTDOWN_GRACE_MS: positiveInt.default(15_000),
+    SHUTDOWN_DRAIN_DELAY_MS: positiveInt.default(5_000),
     REQUEST_TIMEOUT_MS: positiveInt.default(30_000),
     CORS_ORIGINS: z.string().default('*'),
     TRUST_PROXY: booleanish.default(false),
@@ -153,6 +154,17 @@ export const envSchema = z
         message:
           'IDEMPOTENCY_LOCK_TTL_MS must outlive REQUEST_TIMEOUT_MS: a lock that expires while its ' +
           'request is still finishing lets a retry start the same payment twice',
+      });
+    }
+
+    if (env.SHUTDOWN_DRAIN_DELAY_MS >= env.SHUTDOWN_GRACE_MS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SHUTDOWN_DRAIN_DELAY_MS'],
+        message:
+          'SHUTDOWN_DRAIN_DELAY_MS must be below SHUTDOWN_GRACE_MS: the drain happens inside the ' +
+          'grace period, so a delay as long as the budget leaves no time to finish in-flight work ' +
+          'before the watchdog exits',
       });
     }
 

@@ -135,9 +135,25 @@ async function bootstrap(): Promise<void> {
     });
   }
 
-  app.enableShutdownHooks();
+  // Deliberately *not* `app.enableShutdownHooks()`.
+  //
+  // That method's only job is registering process signal listeners, and
+  // the listener it registers calls `app.close()` immediately. It ran
+  // alongside the drain in `installGracefulShutdown` and won: measured
+  // with a 5 s drain configured, the process logged that it was still
+  // serving while its listening socket had been gone for 38 ms, so
+  // readiness had nothing left to answer on and the window the drain
+  // exists to open never opened.
+  //
+  // Passing `[]` does not help — Nest reads an empty array as "every
+  // signal" (nest-application-context.js: `if (isEmptyArray(signals))
+  // signals = Object.values(ShutdownSignal)`), which is the opposite of
+  // what it looks like. Omitting the call is the way to keep the hooks
+  // without the listeners: `close()` runs `callDestroyHook` and
+  // `callShutdownHook` itself, whatever triggered it.
   installGracefulShutdown(app, {
     graceMs: config.shutdownGraceMs,
+    drainDelayMs: config.shutdownDrainDelayMs,
     beforeClose: () => stopTracing(),
   });
 
