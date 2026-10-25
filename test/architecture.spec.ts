@@ -274,3 +274,80 @@ describe('configuration', () => {
     expect(unread).toEqual([]);
   });
 });
+
+/**
+ * Defaults that are written down twice.
+ *
+ * Two values are read from `process.env` directly rather than through
+ * the validated config, and for a good reason: both are needed at
+ * import time, before any module graph exists. `KAFKA_TOPIC_PREFIX`
+ * builds the topic names in `@payhub/contracts`, and
+ * `RECONCILIATION_CRON` is an argument to a decorator.
+ *
+ * The cost is that each one's default is typed out in two places. That
+ * drift is silent in the worst way: change the schema's prefix and
+ * producers keep publishing to the old topic names while consumers
+ * subscribe to the new ones. Nothing errors — messages simply stop
+ * arriving.
+ *
+ * So the two spellings are pinned together here. A third reader of
+ * `process.env` appearing outside the config library is also worth
+ * knowing about, which is why this counts them.
+ */
+/** Source with block and line comments removed, naively but adequately. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+describe('configuration read before the config exists', () => {
+  const schema = () => readFileSync(join(ROOT, 'libs/config/src/env.schema.ts'), 'utf8');
+
+  const defaultOf = (key: string): string => {
+    const match = new RegExp(`${key}:[^\\n]*?\\.default\\('([^']*)'\\)`).exec(schema());
+    if (!match) throw new Error(`no default for ${key} in the schema`);
+    return match[1]!;
+  };
+
+  it('agrees with the schema on the topic prefix', () => {
+    const topics = readFileSync(join(ROOT, 'libs/contracts/src/topics.ts'), 'utf8');
+    const inline = /KAFKA_TOPIC_PREFIX'\]\s*\?\?\s*'([^']*)'/.exec(topics);
+
+    expect(inline?.[1]).toBe(defaultOf('KAFKA_TOPIC_PREFIX'));
+  });
+
+  it('agrees with the schema on the reconciliation schedule', () => {
+    const job = readFileSync(
+      join(ROOT, 'apps/ledger/src/application/jobs/reconciliation.job.ts'),
+      'utf8',
+    );
+    const inline = /RECONCILIATION_CRON'\]\s*\?\?\s*'([^']*)'/.exec(job);
+
+    expect(inline?.[1]).toBe(defaultOf('RECONCILIATION_CRON'));
+  });
+
+  /**
+   * Anything else reaching for `process.env` should go through the
+   * validated config instead — the cookie's `secure` flag did, and read
+   * `NODE_ENV` separately from the `isProduction` the rest of the
+   * service uses.
+   */
+  it('has no other reader of the raw environment', async () => {
+    const files = [...(await sourceFiles('apps')), ...(await sourceFiles('libs'))].filter(
+      (file) =>
+        !file.startsWith(join('libs', 'config', 'src')) &&
+        !file.endsWith(join('src', 'main.ts')),
+    );
+
+    // Comments are stripped first: a note explaining why something does
+    // *not* read `process.env` would otherwise be counted as a reader,
+    // which is exactly what happened when this was first written.
+    const readers = files.filter((file) =>
+      withoutComments(readFileSync(join(ROOT, file), 'utf8')).includes('process.env'),
+    );
+
+    expect(readers.sort()).toEqual([
+      join('apps', 'ledger', 'src', 'application', 'jobs', 'reconciliation.job.ts'),
+      join('libs', 'contracts', 'src', 'topics.ts'),
+    ]);
+  });
+});

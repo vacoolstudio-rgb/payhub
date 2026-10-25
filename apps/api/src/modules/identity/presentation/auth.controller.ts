@@ -1,5 +1,6 @@
 import {
   Body,
+  Inject,
   Controller,
   Delete,
   Get,
@@ -22,13 +23,21 @@ import { UnauthorizedError } from '@payhub/kernel';
 import { AuthService } from '../application/auth.service.js';
 import type { TokenPair } from '../application/token-issuer.port.js';
 import { AuthResponseDto, LoginDto, RefreshDto, RegisterDto } from './dto/auth.dto.js';
+import { type AppConfig, appConfig } from '@payhub/config';
 
 const REFRESH_COOKIE = 'payhub_rt';
 
 @ApiTags('auth')
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    // The validated value, not `process.env`. Everything else in the
+    // service reads configuration through this; a cookie losing
+    // `secure` because two readings of the environment disagreed is
+    // not a failure anyone would notice until it mattered.
+    @Inject(appConfig.KEY) private readonly config: AppConfig,
+  ) {}
 
   @Public()
   @Post('register')
@@ -155,7 +164,7 @@ export class AuthController {
   ): AuthResponseDto {
     response.cookie(REFRESH_COOKIE, tokens.refreshToken, {
       httpOnly: true,
-      secure: process.env['NODE_ENV'] === 'production',
+      secure: this.config.isProduction,
       sameSite: 'strict',
       path: '/api/v1/auth',
       expires: tokens.refreshExpiresAt,
