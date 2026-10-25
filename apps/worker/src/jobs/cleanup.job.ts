@@ -7,6 +7,7 @@ import {
   Transactional,
 } from '@payhub/persistence';
 import { DistributedLockService } from '@payhub/redis';
+import { DEDUPLICATION_RETENTION_MS } from '@payhub/messaging';
 
 /**
  * Retention.
@@ -16,9 +17,15 @@ import { DistributedLockService } from '@payhub/redis';
  *
  *  • `outbox_messages` — published rows are kept briefly so an operator can
  *    answer "was this event actually emitted?" and then dropped.
- *  • `processed_messages` — the inbox only needs to remember a message id
- *    for longer than the broker's retention; after that a redelivery is
- *    impossible anyway.
+ *  • `processed_messages` — the inbox only needs to remember a message
+ *    id for longer than the broker keeps the message. That reasoning was
+ *    right and the number was not: fourteen days, chosen independently,
+ *    against a dead-letter topic that holds messages for thirty. A DLQ
+ *    replay is something a person does after an investigation, which is
+ *    precisely the delay that retention exists to cover — so between day
+ *    fourteen and day thirty a replay arrived with nothing left to
+ *    recognise it. The cutoff is now derived from the retention it has
+ *    to outlive rather than guessed next to it.
  *  • `refresh_sessions` — an expired session cannot be used; keeping it
  *    only makes the unique index bigger.
  *
@@ -53,7 +60,9 @@ export class CleanupJob {
     const publishedRemoved = await this.outbox.purgePublishedBefore(
       new Date(now - 7 * 86_400_000),
     );
-    const inboxRemoved = await this.inbox.purgeBefore(new Date(now - 14 * 86_400_000));
+    const inboxRemoved = await this.inbox.purgeBefore(
+      new Date(now - DEDUPLICATION_RETENTION_MS),
+    );
 
     const sessions = (await this.transactions.manager.query(
       `DELETE FROM payhub.refresh_sessions

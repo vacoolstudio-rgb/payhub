@@ -34,8 +34,33 @@ interface TopicSpec {
 }
 
 const PARTITIONS = 3;
-const RETRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-const DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/**
+ * How long the broker keeps a message, by role.
+ *
+ * Exported because they are not only the broker's business. Anything
+ * that deduplicates redeliveries has to outlive the longest-retained
+ * topic, and the inbox got this wrong by picking its own number: it
+ * forgot a message id after fourteen days while the dead-letter topic
+ * held the message for thirty, so a replay from the DLQ in that window
+ * arrived looking new.
+ */
+export const RETRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Longer on purpose — a dead letter is replayed by a person, after an
+ * investigation, which is exactly the delay the retention has to cover.
+ * That is also what makes it the number everything downstream must be
+ * measured against.
+ */
+export const DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+
+/**
+ * The floor for any replay-deduplication window.
+ *
+ * A margin on top of the longest retention, because the clock that
+ * matters is the one on the broker and the sweep runs on ours.
+ */
+export const DEDUPLICATION_RETENTION_MS = DLQ_RETENTION_MS + 7 * 24 * 60 * 60 * 1_000;
 
 interface RegisteredHandler extends KafkaHandlerMetadata {
   readonly invoke: (payload: unknown, context: MessageContext) => Promise<unknown>;
