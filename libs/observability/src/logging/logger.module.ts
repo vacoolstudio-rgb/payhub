@@ -9,7 +9,12 @@ import {
   appConfig,
   observabilityConfig,
 } from '@payhub/config';
-import { CORRELATION_ID_HEADER, PINO_REDACT_PATHS, type PayHubClsStore } from '@payhub/shared';
+import {
+  CORRELATION_ID_HEADER,
+  PINO_REDACT_PATHS,
+  type PayHubClsStore,
+  redact,
+} from '@payhub/shared';
 
 /**
  * Structured logging with pino.
@@ -43,7 +48,29 @@ import { CORRELATION_ID_HEADER, PINO_REDACT_PATHS, type PayHubClsStore } from '@
             env: app.nodeEnv,
             pid: process.pid,
           },
+          /**
+           * Two layers, because the path list cannot reach everything.
+           *
+           * pino's `*` matches exactly one level, so `*.password`
+           * covers `user.password` and nothing else. Measured against
+           * this very configuration: a top-level `password` went to
+           * the log in plain text, so did one two levels down, and so
+           * did a nested request body carrying a password and an
+           * `ph_live_` key together. The paths are precise and fast
+           * for the shapes they name; they are not a guarantee.
+           *
+           * `redact()` existed for exactly this and was called by
+           * nobody — a recursive walk that masks a sensitive key
+           * wherever it appears. Running it as the log formatter is
+           * what turns the list into a floor rather than the whole
+           * defence. It is bounded by its own depth cap, so a
+           * pathological object costs a fixed walk, not an unbounded
+           * one.
+           */
           redact: { paths: PINO_REDACT_PATHS, censor: '[redacted]' },
+          formatters: {
+            log: (object: Record<string, unknown>) => redact(object),
+          },
           genReqId: (req, res) => {
             const existing = req.headers[CORRELATION_ID_HEADER];
             const id = (Array.isArray(existing) ? existing[0] : existing) ?? randomUUID();

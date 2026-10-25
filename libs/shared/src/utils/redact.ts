@@ -18,9 +18,28 @@ const SENSITIVE_KEYS = new Set([
 export const REDACTED = '[redacted]';
 
 /** Defence in depth: even if a secret reaches a log call, it is not printed. */
+export const TRUNCATED = '[truncated]';
+
 export function redact<T>(value: T, depth = 6): T {
-  if (depth <= 0 || value === null || typeof value !== 'object') {
+  if (value === null || typeof value !== 'object') {
     return value;
+  }
+
+  /**
+   * Past the cap the subtree is dropped, not returned.
+   *
+   * It used to `return value` here, which turned the guard against
+   * infinite recursion into a hole in the redaction: anything deeper
+   * than the cap went to the log exactly as it arrived. Measured — a
+   * password and an `ph_live_` key seven levels down came back in
+   * plain text, while the same keys one level down were masked.
+   *
+   * The test that covered this asserted only that a cyclic structure
+   * did not throw, which an implementation that redacted nothing at
+   * all would also satisfy. That is why it survived.
+   */
+  if (depth <= 0) {
+    return TRUNCATED as unknown as T;
   }
 
   if (Array.isArray(value)) {

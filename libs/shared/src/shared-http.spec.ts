@@ -101,12 +101,57 @@ describe('redact', () => {
     expect(redact(42)).toBe(42);
   });
 
-  /** A cycle must not hang the logger; the depth cap is the guard. */
-  it('stops at the depth limit instead of recursing forever', () => {
-    const cyclic: Record<string, unknown> = { password: 'x' };
-    cyclic['self'] = cyclic;
+  /**
+   * The depth cap, and what it used to cost.
+   *
+   * This test asserted only that a cyclic structure did not throw — an
+   * assertion an implementation that redacted nothing at all would
+   * also satisfy. Under it, the guard returned the subtree it refused
+   * to walk, verbatim: a password and an `ph_live_` key seven levels
+   * down went to the log in plain text while the same keys one level
+   * down were masked. A redaction test that cannot tell redaction from
+   * its absence is how that survived.
+   */
+  describe('the depth cap', () => {
+    const nest = (levels: number, leaf: Record<string, unknown>): Record<string, unknown> =>
+      levels === 0 ? leaf : { down: nest(levels - 1, leaf) };
 
-    expect(() => redact(cyclic)).not.toThrow();
+    it('does not hang on a cycle', () => {
+      const cyclic: Record<string, unknown> = { password: 'x' };
+      cyclic['self'] = cyclic;
+
+      expect(() => redact(cyclic)).not.toThrow();
+    });
+
+    it('still redacts what it can reach in a cycle', () => {
+      const cyclic: Record<string, unknown> = { password: 'hunter2' };
+      cyclic['self'] = cyclic;
+
+      expect((redact(cyclic) as Record<string, unknown>)['password']).toBe('[redacted]');
+    });
+
+    it('drops the subtree it refuses to walk rather than passing it through', () => {
+      const deep = nest(8, { password: 'hunter2', apiKey: 'ph_live_xyz' });
+
+      expect(JSON.stringify(redact(deep))).not.toContain('hunter2');
+      expect(JSON.stringify(redact(deep))).not.toContain('ph_live_xyz');
+    });
+
+    it('marks the truncation instead of silently emptying it', () => {
+      const deep = nest(8, { password: 'hunter2' });
+
+      expect(JSON.stringify(redact(deep))).toContain('[truncated]');
+    });
+
+    it('leaves a structure inside the cap fully redacted', () => {
+      const shallow = nest(2, { password: 'hunter2', keep: 'visible' });
+      const output = JSON.stringify(redact(shallow));
+
+      expect(output).toContain('[redacted]');
+      expect(output).toContain('visible');
+      expect(output).not.toContain('hunter2');
+      expect(output).not.toContain('[truncated]');
+    });
   });
 
   it('declares the pino paths that cover the headers tokens travel in', () => {
