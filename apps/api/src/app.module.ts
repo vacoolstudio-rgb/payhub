@@ -10,7 +10,7 @@ import {
   resilienceConfig,
 } from '@payhub/config';
 import { MessagingModule } from '@payhub/messaging';
-import { MetricsInterceptor, ObservabilityModule } from '@payhub/observability';
+import { HttpMetricsMiddleware, ObservabilityModule } from '@payhub/observability';
 import { PersistenceModule } from '@payhub/persistence';
 import {
   HttpCacheInterceptor,
@@ -115,7 +115,6 @@ import { RealtimeModule } from './realtime/realtime.module.js';
     // are registered inside IdentityModule, which owns their dependencies.
     { provide: APP_GUARD, useClass: GqlThrottlerGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
-    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     { provide: APP_INTERCEPTOR, useClass: TimeoutInterceptor },
     // Last in, so it wraps closest to the handler: on a 304 it returns
     // before the handler runs, while metrics and the timeout still see
@@ -128,6 +127,10 @@ import { RealtimeModule } from './realtime/realtime.module.js';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
+    // Metrics first and unfiltered: it has to see the requests a guard
+    // rejects, which is the half the interceptor could not reach.
+    consumer.apply(HttpMetricsMiddleware).forRoutes('*');
+
     consumer
       .apply(CorrelationIdMiddleware)
       .exclude(

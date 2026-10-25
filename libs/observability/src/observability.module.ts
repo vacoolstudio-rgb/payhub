@@ -7,7 +7,7 @@ import { HealthController } from './health/health.controller.js';
 import { OutboxHealthIndicator } from './health/outbox.health.js';
 import { RedisHealthIndicator } from './health/redis.health.js';
 import { MetricsController } from './metrics/metrics.controller.js';
-import { MetricsInterceptor } from './metrics/metrics.interceptor.js';
+import { HttpMetricsMiddleware } from './metrics/http-metrics.middleware.js';
 import { MetricsService } from './metrics/metrics.service.js';
 import { TransactionMetricsObserver } from './metrics/transaction-metrics.observer.js';
 import { TRANSACTION_OBSERVER } from '@payhub/persistence';
@@ -57,7 +57,7 @@ import { FailureMetricsObserver } from './metrics/failure-metrics.observer.js';
   controllers: [HealthController, MetricsController],
   providers: [
     MetricsService,
-    MetricsInterceptor,
+    HttpMetricsMiddleware,
     // Lets `TransactionManager` report its timings without persistence
     // having to import this library back.
     TransactionMetricsObserver,
@@ -76,7 +76,7 @@ import { FailureMetricsObserver } from './metrics/failure-metrics.observer.js';
     LoggerModule,
     TerminusModule,
     MetricsService,
-    MetricsInterceptor,
+    HttpMetricsMiddleware,
     TRANSACTION_OBSERVER,
   ],
 })

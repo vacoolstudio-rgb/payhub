@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule, type RedisConfig, redisConfig } from '@payhub/config';
 import { MessagingModule } from '@payhub/messaging';
-import { ObservabilityModule, MetricsInterceptor } from '@payhub/observability';
+import { ObservabilityModule } from '@payhub/observability';
 import { PersistenceModule } from '@payhub/persistence';
 import { RedisModule } from '@payhub/redis';
 import { AllExceptionsFilter } from '@payhub/shared';
@@ -77,7 +77,6 @@ import { SetWalletHoldService } from './application/commands/set-wallet-hold.ser
 
     // --- global enhancers -------------------------------------------------
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
-    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
   ],
 })
 export class LedgerModule {}
