@@ -32,9 +32,19 @@ export class EmailChannel implements NotificationChannel {
   private readonly logger = new Logger(EmailChannel.name);
 
   async send(payload: NotificationPayload): Promise<void> {
+    // The variables are the one part of a notification that carries
+    // personal data — a name, an address, sometimes an amount — and
+    // this used to stringify all of them into the message. Measured: a
+    // registration wrote the new user's address and display name to the
+    // log in plain text.
+    //
+    // Stringified is the detail that matters. Redaction walks objects
+    // and masks by key; a value already baked into a message string is
+    // past the point where anything can find it. The keys are safe to
+    // log and say as much for debugging; the values are not.
     this.logger.log(
-      `email → user=${payload.userId} template=${payload.template} subject="${payload.subject}" ` +
-        `vars=${JSON.stringify(payload.variables)}`,
+      `email → user=${payload.userId} template=${payload.template} ` +
+        `fields=[${Object.keys(payload.variables).sort().join(', ')}]`,
     );
   }
 }

@@ -74,17 +74,32 @@ describe('problem details', () => {
 describe('redact', () => {
   it('masks sensitive keys at any depth', () => {
     const masked = redact({
-      email: 'a@b.c',
+      reference: 'order-10294',
       password: 'hunter2',
       nested: { apiKey: 'ph_live_x', token: 't' },
       list: [{ secret: 's' }],
     });
 
     expect(masked).toEqual({
-      email: 'a@b.c',
+      reference: 'order-10294',
       password: REDACTED,
       nested: { apiKey: REDACTED, token: REDACTED },
       list: [{ secret: REDACTED }],
+    });
+  });
+
+  /**
+   * An address used to pass through here untouched, which this test
+   * asserted. It is not a secret — knowing it grants nothing — but it
+   * is personal data, and logs travel further than the database does.
+   * Masked rather than erased, in the shape `Email.masked()` already
+   * used, so a line stays readable while not being a copy of the
+   * record.
+   */
+  it('masks personal data instead of erasing or printing it', () => {
+    expect(redact({ email: 'someone@merchant.example', displayName: 'Probe Person' })).toEqual({
+      email: 's***@merchant.example',
+      displayName: 'P***',
     });
   });
 

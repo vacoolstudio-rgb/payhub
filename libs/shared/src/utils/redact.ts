@@ -15,6 +15,18 @@ const SENSITIVE_KEYS = new Set([
   'iban',
 ]);
 
+/**
+ * Personal data, masked rather than erased.
+ *
+ * Not secrets — knowing them grants nothing — but an email address is
+ * personal data, and logs are routinely shipped somewhere with wider
+ * access than the database. Replacing them outright would cost the
+ * thing logs are for, so these keep the shape the codebase already
+ * settled on in `Email.masked()`: enough to recognise a record while
+ * reading, not enough to be a copy of it.
+ */
+const PERSONAL_KEYS = new Set(['email', 'phone', 'phonenumber', 'displayname']);
+
 export const REDACTED = '[redacted]';
 
 /** Defence in depth: even if a secret reaches a log call, it is not printed. */
@@ -48,7 +60,15 @@ export function redact<T>(value: T, depth = 6): T {
 
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = SENSITIVE_KEYS.has(key.toLowerCase()) ? REDACTED : redact(item, depth - 1);
+    const lower = key.toLowerCase();
+
+    if (SENSITIVE_KEYS.has(lower)) {
+      output[key] = REDACTED;
+    } else if (PERSONAL_KEYS.has(lower) && typeof item === 'string') {
+      output[key] = mask(item);
+    } else {
+      output[key] = redact(item, depth - 1);
+    }
   }
 
   return output as T;
@@ -66,3 +86,18 @@ export const PINO_REDACT_PATHS = [
   '*.secret',
   '*.apiKey',
 ];
+
+/**
+ * Keeps the first character and, for an address, the domain.
+ *
+ * The same shape `Email.masked()` produces, so a line written by the
+ * logger and a line written by the identity context look alike.
+ */
+function mask(value: string): string {
+  if (value.includes('@')) {
+    const [local = '', domain = ''] = value.split('@');
+    return `${local.slice(0, 1)}***@${domain}`;
+  }
+
+  return value.length <= 2 ? '***' : `${value.slice(0, 1)}***`;
+}

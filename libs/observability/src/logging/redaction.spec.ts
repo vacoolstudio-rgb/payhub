@@ -86,3 +86,62 @@ describe('what the logger writes', () => {
     expect(withoutFormatter).toContain(SECRET);
   });
 });
+
+/**
+ * Personal data, which is not a secret and still does not belong in a
+ * log verbatim.
+ *
+ * Knowing someone's address grants nothing, so erasing it outright
+ * would cost debuggability for no gain. It is still personal data, and
+ * logs are routinely shipped somewhere with wider access than the
+ * database. The identity context had already settled this with
+ * `Email.masked()`; the logger had not, and a registration wrote the
+ * new user's address and display name out in full.
+ */
+describe('personal data in logs', () => {
+  const capture = (object: Record<string, unknown>): string => {
+    const lines: string[] = [];
+    const logger = pino(
+      {
+        redact: { paths: PINO_REDACT_PATHS, censor: '[redacted]' },
+        formatters: { log: (o: Record<string, unknown>) => redact(o) },
+      },
+      { write: (line: string) => void lines.push(line) },
+    );
+    (logger as pino.Logger).info(object, 'x');
+    return lines.join('\n');
+  };
+
+  it('masks an address rather than printing it', () => {
+    const line = capture({ email: 'probe@payhub.dev' });
+
+    expect(line).not.toContain('probe@payhub.dev');
+    expect(line).toContain('p***@payhub.dev');
+  });
+
+  it('keeps the domain, which is the part worth reading', () => {
+    expect(capture({ email: 'someone@merchant.example' })).toContain('@merchant.example');
+  });
+
+  it('masks a display name', () => {
+    expect(capture({ displayName: 'Probe Person' })).not.toContain('Probe Person');
+  });
+
+  it('masks an address nested anywhere', () => {
+    expect(capture({ req: { body: { user: { email: 'deep@payhub.dev' } } } })).not.toContain(
+      'deep@payhub.dev',
+    );
+  });
+
+  /** A user id is not personal data and is the thing you search by. */
+  it('leaves identifiers intact', () => {
+    const line = capture({ userId: '176e78bb-de52-411f-a2a2-3f9209ef127c', email: 'a@b.c' });
+
+    expect(line).toContain('176e78bb-de52-411f-a2a2-3f9209ef127c');
+  });
+
+  /** Masked, not erased — the distinction from a credential. */
+  it('does not treat it as a secret', () => {
+    expect(capture({ email: 'probe@payhub.dev' })).not.toContain('[redacted]');
+  });
+});
