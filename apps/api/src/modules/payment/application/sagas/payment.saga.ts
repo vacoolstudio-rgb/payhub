@@ -22,6 +22,8 @@ import {
 import { PAYMENT_REPOSITORY, type PaymentRepository } from '../../domain/payment.repository.js';
 import { PAYMENT_UPDATED_EVENT, type PaymentUpdatedEvent } from '../payment.events.js';
 import { toPaymentView } from '../payment.view.js';
+import { randomUUID } from 'node:crypto';
+import { ReverseTransferCommand as ReverseTransferContract } from '@payhub/contracts';
 
 export interface TransferPostedInput {
   readonly transferId: string;
@@ -49,11 +51,23 @@ export interface TransferRejectedInput {
  * state machine, so "why is this payment stuck?" is answerable by reading a
  * single class instead of tracing events across four services.
  *
- * Compensation: there is nothing to undo on rejection, because the ledger
- * never applied anything — the transaction that rejected is the same one
- * that emitted the rejection. For a failure *after* a successful posting
- * (an expired payment, say) the compensating action is a reversal command,
- * issued by `ExpirePaymentsHandler`.
+ * Compensation comes in two shapes, and for a long time only the first
+ * was true of the code.
+ *
+ * On *rejection* there is nothing to undo: the ledger never applied
+ * anything, because the transaction that rejected is the same one that
+ * emitted the rejection.
+ *
+ * A failure *after* a successful posting is the other shape, and it is
+ * not what the expiry sweep handles — that only touches `pending` and
+ * `authorized`, states in which nothing has been posted. Where it
+ * actually arises is below, in `completeRefund`: the ledger has moved
+ * the money back and the payment cannot record it. Re-issuing does not
+ * help there, because nothing was lost — the state machine disagreed.
+ * That is what `ReverseTransferCommand` is for, and until now nothing
+ * sent one: the contract was declared, the ledger consumed it, a
+ * `ReverseTransferService` implemented it, and no code path produced
+ * it.
  */
 @Injectable()
 export class PaymentSaga {
@@ -223,15 +237,17 @@ export class PaymentSaga {
     const amount = refundedAmountFrom(input, payment);
 
     if (!amount) {
-      this.logger.error(
-        `Refund posting ${input.transferId} has no debit against ${payment.userId}`,
+      await this.unwindRefund(
+        payment,
+        input,
+        `posting has no debit against ${payment.userId}`,
       );
       return;
     }
 
     const refunded = payment.completeRefund(amount);
     if (refunded.isErr()) {
-      this.logger.error(`Cannot complete refund for ${payment.id}: ${refunded.error.message}`);
+      await this.unwindRefund(payment, input, refunded.error.message);
       return;
     }
 
@@ -251,6 +267,59 @@ export class PaymentSaga {
     });
 
     this.notify(payment.userId, payment.merchantId, payment);
+  }
+
+  /**
+   * The ledger moved the money and the payment cannot record it.
+   *
+   * Both callers used to log an error and return, which left the
+   * payment in `refunding` for good: the customer has their money back,
+   * the payment says the refund is still in flight, and the stalled
+   * refund sweep re-issues the same command every five minutes — a loop
+   * that cannot converge, because nothing was lost. The command arrives,
+   * the ledger deduplicates it, the reply comes back, and this method
+   * fails exactly as before. One stuck payment looked like a hundred
+   * failures and healed none of them.
+   *
+   * So the posting is reversed and the payment returns to `captured`,
+   * which is the state it was actually in. The ledger keeps both entries
+   * — it is append-only, and an auditor should see the refund and its
+   * reversal rather than neither. The merchant can then retry the refund
+   * deliberately, which is the right person to make that decision.
+   */
+  private async unwindRefund(
+    payment: Payment,
+    input: TransferPostedInput,
+    why: string,
+  ): Promise<void> {
+    this.logger.error(
+      `Cannot record refund ${input.transferId} on payment ${payment.id} (${why}) — ` +
+        `reversing the ledger posting and returning the payment to captured`,
+    );
+
+    const cancelled = payment.cancelRefund();
+    if (cancelled.isErr()) {
+      // Nothing left to try automatically: the payment is not in a state
+      // this can unwind, so it needs a person.
+      this.metrics.recoverySkipped.inc({ job: 'refund-unwind', reason: 'not_cancellable' });
+      return;
+    }
+
+    await this.payments.save(payment);
+
+    await this.outbox.publish(
+      ReverseTransferContract,
+      {
+        transferId: input.transferId,
+        reversalId: randomUUID(),
+        paymentId: payment.id,
+        reason: `refund could not be recorded: ${why}`,
+        requestedAt: new Date().toISOString(),
+      },
+      { aggregateType: 'Payment', aggregateId: payment.id, partitionKey: payment.id },
+    );
+
+    this.metrics.recoverySkipped.inc({ job: 'refund-unwind', reason: 'reversed' });
   }
 
   private async publish(

@@ -225,6 +225,22 @@ describe('PaymentSaga', () => {
       return payment;
     }
 
+    /** A refund posting with no line against the payer: unreadable. */
+    const unreadableRefund = (paymentId: string) => ({
+      transferId: 'refund-1',
+      paymentId,
+      userId: USER,
+      purpose: 'refund' as const,
+      postedAt: new Date().toISOString(),
+      lines: [
+        {
+          account: 'house:fees:USD',
+          direction: 'debit' as const,
+          amount: { amount: '100', currency: 'USD' },
+        },
+      ],
+    });
+
     /**
      * Regression: the saga used to record `refundableAmount` — the whole
      * remaining balance — instead of what the ledger actually moved. A
@@ -291,19 +307,73 @@ describe('PaymentSaga', () => {
     it('refuses to guess when the posting has no line for this user', async () => {
       const payment = await captured('100.00');
 
-      await saga.onTransferPosted({
-        transferId: 'refund-1',
-        paymentId: payment.id,
-        userId: USER,
-        purpose: 'refund',
-        postedAt: new Date().toISOString(),
-        lines: [
-          { account: 'house:fees:USD', direction: 'debit', amount: { amount: '100', currency: 'USD' } },
-        ],
-      });
+      await saga.onTransferPosted(unreadableRefund(payment.id));
 
       expect(payment.refundedAmount.isZero()).toBe(true);
       expect(published()).not.toContain('payment.refunded.v1');
+    });
+
+    /**
+     * The dead end, and what now happens at it.
+     *
+     * The ledger has moved the money back and the payment cannot record
+     * it. Both branches used to log an error and return, which left the
+     * payment in `refunding` permanently: the customer has their refund,
+     * the payment says it is still in flight, and the stalled-refund
+     * sweep re-issues the same command every five minutes forever. That
+     * loop cannot converge, because nothing was lost — the ledger
+     * deduplicates the command, replies, and the saga fails identically.
+     * One stuck payment produced an unbounded stream of errors and
+     * healed nothing.
+     */
+    describe('when the refund cannot be recorded', () => {
+      it('reverses the ledger posting instead of leaving it applied', async () => {
+        const payment = await captured('100.00');
+
+        await saga.onTransferPosted(unreadableRefund(payment.id));
+
+        expect(published()).toContain('ledger.reverse_transfer.v1');
+      });
+
+      it('reverses the posting it could not record, not some other one', async () => {
+        const payment = await captured('100.00');
+
+        await saga.onTransferPosted(unreadableRefund(payment.id));
+
+        const reversal = outbox.publish.mock.calls.find(
+          ([contract]) => (contract as { name?: string }).name === 'ledger.reverse_transfer.v1',
+        );
+        expect(reversal?.[1]).toMatchObject({ transferId: 'refund-1', paymentId: payment.id });
+      });
+
+      /** The state it was actually in, so the merchant can retry deliberately. */
+      it('returns the payment to captured', async () => {
+        const payment = await captured('100.00');
+
+        await saga.onTransferPosted(unreadableRefund(payment.id));
+
+        expect(payment.status).toBe('captured');
+      });
+
+      it('leaves nothing refunded', async () => {
+        const payment = await captured('100.00');
+
+        await saga.onTransferPosted(unreadableRefund(payment.id));
+
+        expect(payment.refundedAmount.isZero()).toBe(true);
+        expect(published()).not.toContain('payment.refunded.v1');
+      });
+
+      it('breaks the retry loop by leaving no refund in flight', async () => {
+        const payment = await captured('100.00');
+
+        await saga.onTransferPosted(unreadableRefund(payment.id));
+
+        // The sweep selects on `status = 'refunding'`; a payment back at
+        // captured is no longer a candidate, which is what stops the
+        // five-minute re-issue from repeating for ever.
+        expect(payment.status).not.toBe('refunding');
+      });
     });
   });
 
