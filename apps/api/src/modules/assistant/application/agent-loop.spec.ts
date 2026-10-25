@@ -208,3 +208,132 @@ describe('AgentLoopService', () => {
     });
   });
 });
+
+/**
+ * The streamed loop, and the way a stream really ends.
+ *
+ * A reader closing the tab is the common case, not an exotic one: the
+ * abort signal fires and the provider's iterator stops without a
+ * `done` chunk. The loop used to carry on from there — appending an
+ * assistant message with an empty content list, which the API rejects,
+ * and then spending another billed call on a question nobody was
+ * waiting for. Possibly several, since this is a loop.
+ */
+describe('AgentLoopService.stream', () => {
+  const NO_USAGE = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+  const build = (turns: Array<Array<Record<string, unknown>>>) => {
+    const calls: Array<Record<string, unknown>> = [];
+    let turn = 0;
+
+    const llm = {
+      model: 'test-model',
+      countTokens: vi.fn().mockResolvedValue(10),
+      complete: vi.fn(),
+      stream: vi.fn((request: Record<string, unknown>) => {
+        calls.push(request);
+        const chunks = turns[turn] ?? [];
+        turn += 1;
+        return (async function* emit() {
+          for (const chunk of chunks) {
+            yield chunk;
+          }
+        })();
+      }),
+    };
+
+    const tool: AssistantTool = {
+      definition: { name: 'get_payment_totals', description: 'totals', inputSchema: {} },
+      run: async () => 'totals: 12.00 USD',
+    };
+
+    const loop = new AgentLoopService(llm as unknown as LlmProvider);
+
+    const drain = async () => {
+      const seen: Array<Record<string, unknown>> = [];
+      for await (const chunk of loop.stream({
+        system: 'system',
+        messages: [{ role: 'user', content: 'how much?' }],
+        tools: [tool],
+        context: { userId: 'user-1' },
+        authorize: async () => undefined,
+        onUsage: async () => undefined,
+      })) {
+        seen.push(chunk as unknown as Record<string, unknown>);
+      }
+      return seen;
+    };
+
+    return { drain, calls, llm };
+  };
+
+  it('passes text through and ends on done', async () => {
+    const probe = build([
+      [
+        { type: 'text', text: 'Your balance is 10.00.' },
+        { type: 'done', usage: NO_USAGE, stopReason: 'end_turn', content: [] },
+      ],
+    ]);
+
+    const seen = await probe.drain();
+
+    expect(seen.map((c) => c['type'])).toEqual(['text', 'done']);
+  });
+
+  it('stops when the stream ends without a done chunk', async () => {
+    const probe = build([[{ type: 'text', text: 'partial' }]]);
+
+    const seen = await probe.drain();
+
+    expect(seen.map((c) => c['type'])).toEqual(['text']);
+  });
+
+  /** The cost of not stopping: another billed request for nobody. */
+  it('does not start another turn after an aborted stream', async () => {
+    const probe = build([[{ type: 'text', text: 'partial' }], []]);
+
+    await probe.drain();
+
+    expect(probe.llm.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a tool and continues into a second turn', async () => {
+    const probe = build([
+      [
+        {
+          type: 'done',
+          usage: NO_USAGE,
+          stopReason: 'tool_use',
+          content: [{ type: 'tool_use', id: 'a', name: 'get_payment_totals', input: {} }],
+        },
+      ],
+      [
+        { type: 'text', text: 'You spent 12.00.' },
+        { type: 'done', usage: NO_USAGE, stopReason: 'end_turn', content: [] },
+      ],
+    ]);
+
+    const seen = await probe.drain();
+
+    expect(probe.llm.stream).toHaveBeenCalledTimes(2);
+    expect(seen.map((c) => c['type'])).toEqual(['text', 'done']);
+  });
+
+  it('emits done exactly once across a multi-turn run', async () => {
+    const probe = build([
+      [
+        {
+          type: 'done',
+          usage: NO_USAGE,
+          stopReason: 'tool_use',
+          content: [{ type: 'tool_use', id: 'a', name: 'get_payment_totals', input: {} }],
+        },
+      ],
+      [{ type: 'done', usage: NO_USAGE, stopReason: 'end_turn', content: [] }],
+    ]);
+
+    const seen = await probe.drain();
+
+    expect(seen.filter((c) => c['type'] === 'done')).toHaveLength(1);
+  });
+});

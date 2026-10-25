@@ -217,6 +217,7 @@ export class AgentLoopService {
 
       const last = iteration === MAX_ITERATIONS;
       let pending: Array<Extract<LlmContentBlock, { type: 'tool_use' }>> = [];
+      let completed = false;
 
       for await (const chunk of this.llm.stream({
         system: input.system,
@@ -228,6 +229,7 @@ export class AgentLoopService {
         ...(input.context.signal ? { signal: input.context.signal } : {}),
       })) {
         if (chunk.type === 'done') {
+          completed = true;
           await input.onUsage(this.llm.model, chunk.usage);
           pending = (chunk.content ?? []).filter(isToolUse);
 
@@ -244,6 +246,20 @@ export class AgentLoopService {
         }
 
         yield chunk;
+      }
+
+      /**
+       * A stream can end without a `done` chunk.
+       *
+       * The usual way is the one that matters: the reader closes the
+       * tab, the abort signal fires, and the provider's iterator simply
+       * stops. Carrying on from there appended an assistant message
+       * with an empty content list — which the API rejects — and then
+       * spent another billed call answering a question nobody was
+       * waiting for. Possibly several, since this is a loop.
+       */
+      if (!completed) {
+        return;
       }
 
       messages.push({
