@@ -11,3 +11,4 @@ export * from './tracing/tracing.js';
 export * from './graceful-shutdown.js';
 export * from './observability.module.js';
 export * from './health/shutdown-state.service.js';
+export * from './metrics/failure-metrics.observer.js';

@@ -18,6 +18,8 @@ import {
   type HealthDependency,
 } from './health/health.dependencies.js';
 import { ShutdownState } from './health/shutdown-state.service.js';
+import { FAILURE_OBSERVER } from '@payhub/kernel';
+import { FailureMetricsObserver } from './metrics/failure-metrics.observer.js';
 
 /**
  * Cross-cutting observability: context propagation, logging, metrics, health.
@@ -60,12 +62,15 @@ import { ShutdownState } from './health/shutdown-state.service.js';
     // having to import this library back.
     TransactionMetricsObserver,
     { provide: TRANSACTION_OBSERVER, useExisting: TransactionMetricsObserver },
+    FailureMetricsObserver,
+    { provide: FAILURE_OBSERVER, useExisting: FailureMetricsObserver },
     RedisHealthIndicator,
     OutboxHealthIndicator,
     ShutdownState,
     { provide: HEALTH_DEPENDENCIES, useValue: new Set(DEFAULT_HEALTH_DEPENDENCIES) },
   ],
   exports: [
+    FAILURE_OBSERVER,
     ShutdownState,
     ClsModule,
     LoggerModule,

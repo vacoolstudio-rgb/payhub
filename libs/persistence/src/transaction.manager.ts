@@ -8,6 +8,7 @@ import {
   type TransactionObserver,
 } from './transaction-observer.port.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { FAILURE_OBSERVER, type FailureObserver } from '@payhub/kernel';
 
 export type IsolationLevel =
   | 'READ UNCOMMITTED'
@@ -57,6 +58,9 @@ export class TransactionManager {
     @Optional()
     @Inject(TRANSACTION_OBSERVER)
     private readonly observer?: TransactionObserver,
+    @Optional()
+    @Inject(FAILURE_OBSERVER)
+    private readonly failures?: FailureObserver,
   ) {}
 
   /** The manager repositories must use: ambient transaction, else the pool. */
@@ -213,6 +217,11 @@ export class TransactionManager {
       try {
         await effect();
       } catch (error) {
+        // The transaction is committed; this effect is not coming back.
+        // Counted so a side effect that silently stopped happening — a
+        // cache left unflushed, an event never emitted — shows up as
+        // something other than a line in yesterday's logs.
+        this.failures?.suppressed('after-commit', 'effect_threw');
         this.logger.error(
           `After-commit effect failed: ${error instanceof Error ? error.message : String(error)}`,
         );

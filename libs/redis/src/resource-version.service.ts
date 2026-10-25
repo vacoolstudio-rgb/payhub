@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { RedisService } from './redis.service.js';
+import { FAILURE_OBSERVER, type FailureObserver } from '@payhub/kernel';
 
 /**
  * Opaque version markers, one per cacheable resource scope.
@@ -29,9 +30,35 @@ export class ResourceVersionService {
    * Long, but not infinite. A version key is pure derived state: losing it
    * costs one cache miss, so it does not deserve to live forever in memory.
    */
-  private static readonly TTL_SEC = 30 * 24 * 60 * 60;
+  /**
+   * How long a version token survives without being touched.
+   *
+   * This was thirty days, on the reasoning that a failed bump costs
+   * "staleness bounded by the TTL". The bound was the problem: the
+   * token is what the ETag is built from, so a bump that does not
+   * happen leaves every revalidation answering 304 for data that
+   * moved. Measured against the running API — a payment taken from
+   * `captured` to `failed` with no bump in between still answered 304
+   * to a conditional request, and would have for a month.
+   *
+   * The worst case is the one that matters: a terminal transition has
+   * no later write to heal it, so an integrator polling that payment
+   * would never have seen it settle.
+   *
+   * An hour bounds it to something real. The cost is one unconditional
+   * response per scope per hour against the thousand-odd conditional
+   * ones a polling integrator sends in that time.
+   */
+  private static readonly TTL_SEC = 60 * 60;
 
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    private readonly redis: RedisService,
+    // Optional: a service with no metrics wired must still be able to
+    // bump a version.
+    @Optional()
+    @Inject(FAILURE_OBSERVER)
+    private readonly failures?: FailureObserver,
+  ) {}
 
   /**
    * Current markers for every scope, in one round trip.
@@ -86,6 +113,10 @@ export class ResourceVersionService {
       }
       await pipeline.exec();
     } catch (error) {
+      // Counted, not merely logged. This is the failure that leaves a
+      // reader holding a validator the data has outgrown, and nobody is
+      // paged by a log line.
+      this.failures?.suppressed('resource-version-bump', 'redis_unavailable');
       this.logger.warn(`Version bump failed for [${scopes.join(', ')}]: ${describe(error)}`);
     }
   }

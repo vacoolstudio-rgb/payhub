@@ -9,3 +9,4 @@ export * from './money.js';
 export * from './ports.js';
 export * from './specification.js';
 export * from './pagination.js';
+export * from './failure-observer.port.js';

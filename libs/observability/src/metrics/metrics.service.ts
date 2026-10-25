@@ -53,6 +53,27 @@ export class MetricsService implements OnModuleInit {
     registers: [this.registry],
   });
 
+  /**
+   * Failures that were caught on purpose and went no further.
+   *
+   * Some failures must not travel — telemetry may not fail a payment,
+   * an after-commit effect has nothing left to undo, a cache bump may
+   * not roll back the write it follows. Swallowing them is right.
+   * Leaving them visible only in a log line is not: both sites this
+   * started with changed behaviour while staying silent. A committed
+   * transaction whose side effect vanished, and a validator that kept
+   * answering 304 for a month after the data moved.
+   *
+   * `site` and `reason` are deliberately coarse — they are metric
+   * dimensions, and a message in a label is a cardinality incident.
+   */
+  readonly suppressedFailures = new Counter({
+    name: 'suppressed_failures_total',
+    help: 'Failures caught deliberately and not propagated',
+    labelNames: ['site', 'reason'] as const,
+    registers: [this.registry],
+  });
+
   readonly messagesProcessed = new Counter({
     name: 'messages_processed_total',
     help: 'Integration messages consumed',

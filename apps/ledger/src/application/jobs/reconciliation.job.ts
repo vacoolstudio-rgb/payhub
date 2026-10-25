@@ -80,6 +80,12 @@ export class LedgerReconciliationJob {
       try {
         this.report(report);
       } catch (error) {
+        // The alarm itself failing is the one failure nobody can infer
+        // from the absence of an alarm.
+        this.metrics.suppressedFailures.inc({
+          site: 'reconciliation-report',
+          reason: 'report_threw',
+        });
         this.logger.error(
           `Failed to report reconciliation for ${report.currency}: ${
             error instanceof Error ? error.message : String(error)

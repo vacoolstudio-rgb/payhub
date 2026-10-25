@@ -32,6 +32,16 @@ describe('Outbox & inbox (integration)', () => {
   /** What the observer port was told, in order. */
   const recorded: Array<{ isolation: string; outcome: string; seconds: number }> = [];
 
+  /** Failures the manager caught on purpose and reported. */
+  const suppressed: Array<{ site: string; reason: string }> = [];
+
+  const count = async (): Promise<number> => {
+    const [row] = (await dataSource.query(
+      'SELECT count(*)::int AS n FROM ledger.outbox_messages',
+    )) as Array<{ n: number }>;
+    return row!.n;
+  };
+
   const append = (overrides: Partial<Parameters<OutboxRepository['append']>[0]> = {}) =>
     outbox.append({
       topic: 'payhub.payments.events.v1',
@@ -79,10 +89,15 @@ describe('Outbox & inbox (integration)', () => {
           provide: TransactionManager,
           inject: [DataSource, ClsService],
           useFactory: (ds: DataSource, cls: ClsService) =>
-            new TransactionManager(ds, cls, {
-              record: (isolation, outcome, seconds) =>
-                void recorded.push({ isolation, outcome, seconds }),
-            }),
+            new TransactionManager(
+              ds,
+              cls,
+              {
+                record: (isolation, outcome, seconds) =>
+                  void recorded.push({ isolation, outcome, seconds }),
+              },
+              { suppressed: (site, reason) => void suppressed.push({ site, reason }) },
+            ),
         },
         OutboxRepository,
         InboxRepository,
@@ -504,6 +519,69 @@ describe('Outbox & inbox (integration)', () => {
       await transactions.run(async () => append(), { isolation: 'REPEATABLE READ' });
 
       expect(recorded.at(-1)).toMatchObject({ isolation: 'REPEATABLE READ' });
+    });
+  });
+
+  /**
+   * A committed transaction whose side effect vanished.
+   *
+   * `settle` runs after-commit effects and must not fail the
+   * transaction — by then there is nothing left to undo. The
+   * consequence is that an effect which stops happening does so in
+   * silence: a cache never flushed, an event never emitted, one line in
+   * a log nobody reads. Counted now, so the thing that quietly stopped
+   * is visible as a number.
+   */
+  describe('a failing after-commit effect', () => {
+    it('does not fail the transaction that already committed', async () => {
+      await expect(
+        transactions.run(async () => {
+          await append();
+          transactions.afterCommit(() => {
+            throw new Error('cache flush failed');
+          });
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('still commits the work', async () => {
+      const before = await count();
+
+      await transactions.run(async () => {
+        await append();
+        transactions.afterCommit(() => {
+          throw new Error('cache flush failed');
+        });
+      });
+
+      expect(await count()).toBe(before + 1);
+    });
+
+    it('counts the failure rather than only logging it', async () => {
+      suppressed.length = 0;
+
+      await transactions.run(async () => {
+        await append();
+        transactions.afterCommit(() => {
+          throw new Error('cache flush failed');
+        });
+      });
+
+      expect(suppressed).toContainEqual({ site: 'after-commit', reason: 'effect_threw' });
+    });
+
+    it('runs the remaining effects after one of them throws', async () => {
+      const ran: string[] = [];
+
+      await transactions.run(async () => {
+        await append();
+        transactions.afterCommit(() => {
+          throw new Error('first');
+        });
+        transactions.afterCommit(() => void ran.push('second'));
+      });
+
+      expect(ran).toEqual(['second']);
     });
   });
 
