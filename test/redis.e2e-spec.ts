@@ -912,6 +912,60 @@ describe('Redis primitives (integration)', () => {
       expect(outcomes.filter((outcome) => outcome === 'admitted')).toHaveLength(2);
     });
 
+    /**
+     * A question that fails costs nothing.
+     *
+     * The hold is taken before each billed request and settled by
+     * `record` when the usage comes back. A request that throws has no
+     * usage, so nothing settled it and the estimate stayed charged for
+     * the rest of the day — a provider outage would have spent a
+     * user's whole allowance on answers they never received, and the
+     * agent loop holds once per iteration, so a failure on the third
+     * turn leaked all three.
+     */
+    it('gives the hold back when nothing was billed', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 400);
+      await budget.releaseHeld(user);
+
+      expect(await budget.remaining(user)).toBe(1_000);
+    });
+
+    it('gives back every hold a multi-turn run took', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 300);
+      await budget.authorizeOrThrow(user, 300);
+      await budget.releaseHeld(user);
+
+      expect(await budget.remaining(user)).toBe(1_000);
+    });
+
+    /** `record` drains the hold, so releasing afterwards must be a no-op. */
+    it('does not refund a hold that was already settled', async () => {
+      const user = USER();
+
+      await budget.authorizeOrThrow(user, 400);
+      await budget.record(user, 'test-model', {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      });
+      await budget.releaseHeld(user);
+
+      expect(await budget.remaining(user)).toBe(880);
+    });
+
+    it('is safe to call when nothing is held', async () => {
+      const user = USER();
+
+      await budget.releaseHeld(user);
+
+      expect(await budget.remaining(user)).toBe(1_000);
+    });
+
     it('settles the hold against what was actually billed', async () => {
       const user = USER();
 

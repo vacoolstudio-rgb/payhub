@@ -133,17 +133,26 @@ export class AssistantService {
       };
     }
 
-    const run = await this.agent.run({
-      system: this.systemPrompt(now),
-      messages: this.buildMessages(input),
-      tools: this.tools.tools(),
-      context: { userId: input.userId, signal: input.signal },
-      // Before every billed request in the loop, not once at the start:
-      // a run that grows past the allowance has to stop part-way.
-      authorize: (estimated) => this.budget.authorizeOrThrow(input.userId, estimated),
-    });
+    // The hold taken before each billed request is settled by `record`
+    // on the way out. A run that throws has no usage to settle with, so
+    // the release is what stops a failed question costing the user's
+    // allowance anyway.
+    let run;
+    try {
+      run = await this.agent.run({
+        system: this.systemPrompt(now),
+        messages: this.buildMessages(input),
+        tools: this.tools.tools(),
+        context: { userId: input.userId, signal: input.signal },
+        // Before every billed request in the loop, not once at the start:
+        // a run that grows past the allowance has to stop part-way.
+        authorize: (estimated) => this.budget.authorizeOrThrow(input.userId, estimated),
+      });
 
-    await this.budget.record(input.userId, run.model, run.usage);
+      await this.budget.record(input.userId, run.model, run.usage);
+    } finally {
+      await this.budget.releaseHeld(input.userId);
+    }
 
     if (cacheable) {
       // `LLM_CACHE_TTL_SEC`, which was declared, defaulted to exactly
@@ -173,16 +182,24 @@ export class AssistantService {
   async *askStream(input: AskInput): AsyncIterable<LlmStreamChunk> {
     this.assertEnabled();
 
-    yield* this.agent.stream({
-      system: this.systemPrompt(new Date()),
-      messages: this.buildMessages(input),
-      tools: this.tools.tools(),
-      context: { userId: input.userId, signal: input.signal },
-      authorize: (estimated) => this.budget.authorizeOrThrow(input.userId, estimated),
-      // Recorded per turn rather than once at the end: a client that
-      // disconnects mid-run still spent what the earlier turns cost.
-      onUsage: (model, usage) => this.budget.record(input.userId, model, usage),
-    });
+    // `finally` in a generator runs when the consumer stops reading, not
+    // only when the generator finishes — which is the case that matters
+    // here, since an abandoned stream is exactly how a turn ends without
+    // its usage ever arriving.
+    try {
+      yield* this.agent.stream({
+        system: this.systemPrompt(new Date()),
+        messages: this.buildMessages(input),
+        tools: this.tools.tools(),
+        context: { userId: input.userId, signal: input.signal },
+        authorize: (estimated) => this.budget.authorizeOrThrow(input.userId, estimated),
+        // Recorded per turn rather than once at the end: a client that
+        // disconnects mid-run still spent what the earlier turns cost.
+        onUsage: (model, usage) => this.budget.record(input.userId, model, usage),
+      });
+    } finally {
+      await this.budget.releaseHeld(input.userId);
+    }
   }
 
   /**

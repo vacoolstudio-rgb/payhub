@@ -166,6 +166,31 @@ export class TokenBudgetService {
   }
 
   /**
+   * Returns whatever this process is still holding for a user.
+   *
+   * A hold is taken before each billed request and settled by
+   * `record` when the usage comes back. If the request fails there is
+   * no usage and nothing settles it, so the estimate stays charged for
+   * the rest of the day — a provider outage would spend a user's whole
+   * allowance on answers they never got, and the agent loop makes that
+   * worse by holding once per iteration.
+   *
+   * Idempotent: `record` drains the hold, so calling this afterwards
+   * finds nothing and refunds nothing.
+   */
+  async releaseHeld(userId: string): Promise<void> {
+    const key = reservationKey(userId);
+    const held = this.reservations.get(key) ?? 0;
+
+    if (held === 0) {
+      return;
+    }
+
+    this.reservations.delete(key);
+    await this.charge(userId, -held);
+  }
+
+  /**
    * One round trip that both moves the counter and reports it, so no
    * two callers can act on the same reading.
    */
