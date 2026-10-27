@@ -58,13 +58,45 @@ describe('scoping of money queries', () => {
   });
 
   describe('payment listing', () => {
-    it('refuses an unscoped listing', async () => {
+    it('refuses a listing that lost its scope on the way in', async () => {
       const [handler, list] = listHandler();
 
       await expect(handler.execute(new ListPayments({ limit: 25 }))).rejects.toMatchObject({
         code: 'UNSCOPED_QUERY',
       });
       expect(list).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The case the first version of this guard broke.
+     *
+     * Support holds `payment:read:any` precisely so it can list across
+     * principals, and the controller expresses that by narrowing to
+     * nothing. Refusing every unscoped listing read correctly and
+     * turned that path into a 403 — found by calling the endpoint,
+     * not by reading the code, two iterations after I wrote the guard
+     * and claimed nothing reached it.
+     *
+     * The flag is how the two are told apart: by the time a query
+     * reaches the repository, deliberately broad and accidentally
+     * broad look identical.
+     */
+    it('allows a privileged caller who asked for every principal', async () => {
+      const [handler, list] = listHandler(
+        vi.fn().mockResolvedValue({ items: [], nextCursor: null, hasMore: false }),
+      );
+
+      await handler.execute(new ListPayments({ acrossAllPrincipals: true, limit: 25 }));
+
+      expect(list).toHaveBeenCalled();
+    });
+
+    it('still refuses when the flag is absent, whatever else is set', async () => {
+      const [handler] = listHandler();
+
+      await expect(
+        handler.execute(new ListPayments({ status: 'captured' as never, limit: 25 })),
+      ).rejects.toMatchObject({ code: 'UNSCOPED_QUERY' });
     });
 
     it('runs for a user', async () => {

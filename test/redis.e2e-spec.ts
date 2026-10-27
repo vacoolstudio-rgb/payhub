@@ -767,6 +767,55 @@ describe('Redis primitives (integration)', () => {
       };
     };
 
+    /**
+     * A key written by the other method.
+     *
+     * `getOrSet` stores the bare value and `getOrRevalidate` stores it
+     * wrapped with a freshness stamp, under the same key space. Reading
+     * one as the other yielded `undefined` typed as the value — a
+     * missing balance handed to the caller with nothing to say it came
+     * from the cache. Nothing uses a key both ways today; this is so
+     * that doing it later is a miss rather than a wrong answer.
+     */
+    it('treats a value written by getOrSet as a miss, not as an empty one', async () => {
+      await cache.set(KEY, 'written-by-getOrSet', { ttlSec: 60 });
+
+      const value = await cache.getOrRevalidate(KEY, async () => 'recomputed', {
+        freshSec: 60,
+        staleSec: 60,
+      });
+
+      expect(value).toBe('recomputed');
+    });
+
+    it('leaves a proper envelope alone', async () => {
+      await cache.getOrRevalidate(KEY, async () => 'first', { freshSec: 60, staleSec: 60 });
+
+      const second = await cache.getOrRevalidate(KEY, async () => 'second', {
+        freshSec: 60,
+        staleSec: 60,
+      });
+
+      expect(second).toBe('first');
+    });
+
+    it('remembers an absence rather than reloading it every time', async () => {
+      let calls = 0;
+      const absent = async (): Promise<string | null> => {
+        calls += 1;
+        return null;
+      };
+
+      await expect(
+        cache.getOrRevalidate(KEY, absent, { freshSec: 60, staleSec: 60 }),
+      ).resolves.toBeNull();
+      await expect(
+        cache.getOrRevalidate(KEY, absent, { freshSec: 60, staleSec: 60 }),
+      ).resolves.toBeNull();
+
+      expect(calls).toBe(1);
+    });
+
     it('blocks only on a key that is genuinely absent', async () => {
       const loader = countingLoader(() => 'first', 50);
 

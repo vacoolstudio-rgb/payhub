@@ -28,6 +28,16 @@ export class ListPayments {
     readonly input: {
       readonly userId?: string | undefined;
       readonly merchantId?: string | undefined;
+      /**
+       * Set only by a caller holding `payment:read:any`, and only when
+       * they asked for every principal rather than narrowing to one.
+       *
+       * The distinction the handler needs is between a listing that is
+       * unscoped because support meant it and one that is unscoped
+       * because a scope was dropped on the way in. Both look identical
+       * at the repository.
+       */
+      readonly acrossAllPrincipals?: boolean | undefined;
       readonly status?: PaymentStatus | undefined;
       readonly direction?: PaymentDirection | undefined;
       readonly currency?: string | undefined;
@@ -83,7 +93,15 @@ export class ListPaymentsHandler
   constructor(@Inject(PAYMENT_REPOSITORY) private readonly payments: PaymentRepository) {}
 
   async execute(query: ListPayments): Promise<CursorPage<PaymentView>> {
-    if (!query.input.userId && !query.input.merchantId) {
+    // Deliberately broad is allowed; accidentally broad is not.
+    //
+    // This guard first refused every listing with no scope, which read
+    // correctly and was wrong: support holding `payment:read:any` is
+    // *meant* to list across principals, and that path went from
+    // working to 403 without anything saying so. The flag is how the
+    // controller states the difference, since by the time the query
+    // reaches the repository the two are identical.
+    if (!query.input.userId && !query.input.merchantId && !query.input.acrossAllPrincipals) {
       throw new ForbiddenError('A payment listing must be scoped', 'UNSCOPED_QUERY');
     }
 

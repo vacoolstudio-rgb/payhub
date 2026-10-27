@@ -220,10 +220,26 @@ export class CacheService {
     loader: () => Promise<T | null>,
     options: RevalidateOptions,
   ): Promise<T | null> {
-    const envelope = await this.get<Envelope<T>>(key);
+    const stored = await this.get<unknown>(key);
 
-    if (envelope === null) {
+    if (stored === null) {
       return null; // A cached absence is still an answer.
+    }
+
+    // Only a value this method wrote can be read as one. `getOrSet`
+    // stores the bare value under the same key space, and reading that
+    // as an envelope yields `undefined` typed as `T` — a missing
+    // balance delivered silently, with nothing to indicate it came from
+    // the cache rather than the database. Nothing uses a key both ways
+    // today; this is here so that doing it later is a cache miss rather
+    // than a wrong answer.
+    const envelope = isEnvelope<T>(stored) ? stored : undefined;
+
+    if (stored !== undefined && envelope === undefined) {
+      // Evicted rather than read: the cold path below delegates to
+      // `getOrSet`, which would hit this same foreign value and hand
+      // back `undefined` again.
+      await this.del(key);
     }
 
     if (envelope !== undefined) {
@@ -377,4 +393,14 @@ function jitteredTtl(options: CacheOptions): number {
 
 function stripPrefix(key: string, prefix: string): string {
   return key.startsWith(`${prefix}:`) ? key.slice(prefix.length + 1) : key;
+}
+
+/** A value written by `getOrRevalidate`, as opposed to anything else. */
+function isEnvelope<T>(value: unknown): value is Envelope<T> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'v' in value &&
+    typeof (value as { f?: unknown }).f === 'number'
+  );
 }

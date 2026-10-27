@@ -145,6 +145,11 @@ export class PaymentController {
             : canReadAny
               ? query.merchantId
               : undefined,
+        // Only a privileged caller who narrowed to nothing gets the
+        // platform-wide listing, and only by saying so explicitly.
+        ...(canReadAny && principal.kind !== 'merchant' && !query.merchantId
+          ? { acrossAllPrincipals: true }
+          : {}),
         status: query.status,
         direction: query.direction,
         currency: query.currency,
