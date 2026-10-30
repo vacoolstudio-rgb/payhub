@@ -98,13 +98,34 @@ jobs:
           # the runner is discarded anyway, so turn it off to avoid surprises.
           TESTCONTAINERS_REUSE_ENABLE: 'false'
           JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
-          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
           API_KEY_PEPPER: ci-api-key-pepper-value
           DATABASE_URL: postgresql://payhub:payhub@localhost:5432/payhub
 
   # ---------------------------------------------------------------------------
   # Frontend
   # ---------------------------------------------------------------------------
+  compose:
+    name: Compose file
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No network, so this behaves the same on every machine. The
+      # question it answers is narrow — are the versions pinned — and
+      # the broader one, do the references resolve, is answered by the
+      # integration job actually pulling them.
+      - name: Every image is pinned
+        run: |
+          set -euo pipefail
+          docker compose config --images | sort -u
+          floating=$(docker compose config --images | grep -E ':latest$' || true)
+          if [ -n "$floating" ]; then
+            echo "::error::pin a version, found: $floating"
+            exit 1
+          fi
+
   web:
     name: Web build
     runs-on: ubuntu-latest
@@ -192,12 +213,17 @@ jobs:
         # notifications included: it is the one service on the Nest Kafka
         # transport rather than the hand-written consumer, so nothing else
         # in CI exercises that path.
+        # Every service, not a named subset.
+        #
+        # CI used to start seven of them, so the four observability
+        # images and the web build were never exercised here. A Jaeger
+        # tag that was never published and a frontend image that could
+        # not build both survived that way, and the first person to run
+        # the documented `docker compose up` found them instead.
         run: >-
-          docker compose up -d --build --wait --wait-timeout 600
-          postgres redis kafka api ledger worker notifications
+          docker compose up -d --build --wait --wait-timeout 900
         env:
           JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
-          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
           API_KEY_PEPPER: ci-api-key-pepper-value
 
       - name: Wait for readiness
@@ -221,7 +247,6 @@ jobs:
         env:
           DATABASE_URL: postgresql://payhub:payhub@localhost:5432/payhub
           JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters-long
-          JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters-long
           API_KEY_PEPPER: ci-api-key-pepper-value
 
       - name: Every service is serving

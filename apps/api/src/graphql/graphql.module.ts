@@ -79,7 +79,24 @@ function validationMessages(exception: BadRequestException): string[] {
       imports: [GraphqlLoadersModule],
       inject: [appConfig.KEY, LoaderFactory],
       useFactory: (config: AppConfig, loaders: LoaderFactory) => ({
-        autoSchemaFile: join(here, '../../schema.gql'),
+        /**
+         * Written to disk only in development.
+         *
+         * The generated SDL is a tool for people — codegen, review,
+         * diffing a schema change — and nothing at runtime reads it.
+         * Producing it at startup means the process needs a writable
+         * filesystem, which the container deliberately does not give
+         * it: the image runs as `node` while `/app/dist` belongs to
+         * root, and the Kubernetes manifests set
+         * `readOnlyRootFilesystem: true` on purpose.
+         *
+         * So the API could not start in its own image. It got as far as
+         * connecting to Postgres, Redis and Kafka, then died with
+         * `EACCES: permission denied, open '/app/dist/apps/api/schema.gql'`
+         * and restarted, forever. `true` keeps the schema in memory,
+         * which is all a server needs.
+         */
+        autoSchemaFile: config.isProduction ? true : join(here, '../../schema.gql'),
         sortSchema: true,
         path: '/graphql',
         playground: false,

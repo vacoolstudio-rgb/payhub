@@ -159,7 +159,10 @@ services:
     networks: [payhub]
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    # Pinned like every other image here. `latest` meant two people
+    # running `docker compose up` a month apart got different software,
+    # which is the one thing a compose file exists to prevent.
+    image: provectuslabs/kafka-ui:v0.7.2
     environment:
       KAFKA_CLUSTERS_0_NAME: payhub-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
@@ -170,7 +173,12 @@ services:
     networks: [payhub]
 
   jaeger:
-    image: jaegertracing/all-in-one:1.62
+    # `1.62` was never published — Jaeger stopped cutting two-part tags
+    # after 1.60, so only `1.62.0` exists. Compose aborts the whole pull
+    # on an unresolvable reference, which is why the other three images
+    # reported "No such image" alongside it; they were interrupted, not
+    # broken.
+    image: jaegertracing/all-in-one:1.62.0
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
