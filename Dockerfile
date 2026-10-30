@@ -71,6 +71,35 @@ USER node
 ENTRYPOINT ["dumb-init", "--"]
 
 # -----------------------------------------------------------------------------
+# 3b. dev — the same dependencies, no compilation, source arrives by mount
+#
+# The runtime images above carry a compiled `dist` and production
+# dependencies only, which is right for shipping and useless for working:
+# a change on the host would need a full image rebuild to be seen.
+#
+# This stage takes the *full* dependency tree the build stage already
+# installed — `tsx` included — and nothing else. `docker-compose.dev.yml`
+# mounts the repository over `/app`, so a save on the host is a reload in
+# the container, in about a second rather than a minute.
+#
+# `node_modules` is deliberately not part of that mount: the host tree is
+# built for the host's platform and these are Linux containers, so the
+# overlay keeps the image's copy.
+# -----------------------------------------------------------------------------
+FROM node:24-alpine AS dev
+WORKDIR /app
+
+RUN apk add --no-cache dumb-init curl
+
+ENV NODE_ENV=development \
+    NODE_OPTIONS="--enable-source-maps"
+
+COPY --from=deps /app/node_modules ./node_modules
+
+ENTRYPOINT ["dumb-init", "--"]
+# The command comes from compose: one stage, four services.
+
+# -----------------------------------------------------------------------------
 # 4. the four services
 # -----------------------------------------------------------------------------
 FROM runtime-base AS api

@@ -165,7 +165,15 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 >/dev/null 2>&1"]
+      # Listing topics, not just asking for API versions.
+      #
+      # Every service provisions its topics on boot and treats a failure
+      # as fatal — correctly, since an orchestrator restarts it. The
+      # version handshake answers before the broker will reliably serve
+      # metadata, so "healthy" could be true while the first admin call
+      # still failed; under load that is exactly what happened. `--list`
+      # exercises the same path the dependents do.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 15

@@ -1,0 +1,157 @@
+# Hot reload, layered over the normal stack.
+#
+#   npm run dev:docker
+#   # docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# `docker compose up` on its own still runs the compiled images, so the
+# default stays the one that resembles production. This file swaps the
+# four Node services onto the `dev` stage and mounts the repository over
+# `/app`, so a save on the host reaches the container with no image
+# rebuild.
+#
+# One compiler, four runtimes — the same shape as the Dockerfile. The
+# `builder` service runs `tsc` in watch mode and writes into the shared
+# mount; each service runs `node --watch` over that output and restarts
+# when its own files change. Four compilers would do the same work four
+# times.
+#
+# Not `tsx`: it is built on esbuild, which does not implement
+# `emitDecoratorMetadata`, and Nest reads `design:paramtypes` to inject
+# constructor dependencies. Every service died on boot with "Nest can't
+# resolve dependencies". Compiling with the project's real compiler also
+# means development and production fail in the same places.
+#
+# Two details that are easy to get wrong and expensive to debug:
+#
+#   • `node_modules` is an anonymous volume on top of the bind mount.
+#     Without it the host's tree shadows the image's, and the host's is
+#     built for macOS while these are Linux containers — argon2 and the
+#     other native modules fail to load.
+#
+#   • A new dependency still needs `--build`. The dependency tree lives
+#     in the image, not in the mount.
+#
+# The four services start one after another rather than together.
+#
+# Each one provisions its Kafka topics on boot and treats a failure as
+# fatal — correctly, since an orchestrator restarts it. Four of them
+# doing that at the same moment against a single broker on a laptop is
+# a race, and measured over repeated cold starts one of the four lost
+# it most of the time; which one varied. Retrying the admin call made
+# it rarer and not rare enough.
+#
+# Under `node --watch` that transient is permanent: the process exits,
+# the watcher prints "waiting for file changes" and nothing restarts it
+# until somebody edits something. So the dev stack removes the
+# contention instead of surviving it. A cold start costs the services
+# in sequence rather than in parallel; nothing about the application
+# changes, which is the point — production still starts them together
+# and still fails fast.
+#
+# The `dev` stage carries no HEALTHCHECK — those live on the four
+# production targets, which this file replaces. Without one,
+# `--wait` returns as soon as a container is *running*, which is
+# several seconds before the server listens; each service below
+# declares its own so the command means what it says.
+
+x-dev-node: &dev-node
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: dev
+  volumes:
+    - .:/app
+    - /app/node_modules
+  environment:
+    NODE_ENV: development
+    LOG_PRETTY: "true"
+    LOG_LEVEL: debug
+
+services:
+  # Compiles once for everybody. Nothing depends on it being *ready* —
+  # the services start against whatever `dist` already holds and restart
+  # when it changes.
+  builder:
+    <<: *dev-node
+    command: npm run dev:compile
+    restart: unless-stopped
+    networks: [payhub]
+    # Healthy once the first full compile has landed.
+    #
+    # The services below wait for it, which settles two problems at
+    # once. `npm run build` begins by emptying `dist`, so anything that
+    # started during it would be running against a directory being
+    # rewritten underneath it. And a full TypeScript build is enough
+    # CPU to starve a Kafka broker that four services are all trying to
+    # provision topics on at the same moment — which is how this first
+    # failed: "Topic provisioning failed", and then `node --watch`
+    # sitting there waiting for a file change that was never coming,
+    # because it does not retry a boot that threw.
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/.dev-compiled"]
+      interval: 3s
+      timeout: 2s
+      retries: 60
+      start_period: 10s
+
+  api:
+    <<: *dev-node
+    command: npm run dev:api
+    depends_on:
+      ledger: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+  ledger:
+    <<: *dev-node
+    command: npm run dev:ledger
+    depends_on:
+      builder: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+  worker:
+    <<: *dev-node
+    command: npm run dev:worker
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3002/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+  notifications:
+    <<: *dev-node
+    command: npm run dev:notifications
+    depends_on:
+      worker: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3003/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+  # Vite's own dev server, serving from the mount rather than a static
+  # build behind nginx.
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      target: build
+    command: npm run dev -- --host 0.0.0.0 --port 80
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:3000

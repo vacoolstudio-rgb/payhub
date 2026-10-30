@@ -1,3 +1,4 @@
+import { retry } from '@payhub/shared';
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -82,7 +83,26 @@ async function bootstrap(): Promise<void> {
     beforeClose: () => stopTracing(),
   });
 
-  await app.startAllMicroservices();
+  /**
+   * Retried, for the same reason topic provisioning is.
+   *
+   * This is the one service on Nest's Kafka transport rather than the
+   * hand-written consumer, so it connects through a different path and
+   * did not benefit when that one learned to retry. Starting four
+   * services at once against a single broker, this was reliably the
+   * one that lost: a Metadata request failed, the bootstrap threw and
+   * the process died.
+   *
+   * A broker that is busy for a moment is not a broker that will never
+   * have us. Three attempts over a couple of seconds; anything that
+   * outlives them still ends the process, which is what an
+   * orchestrator wants to see.
+   */
+  await retry(() => app.startAllMicroservices(), {
+    attempts: 5,
+    baseDelayMs: 500,
+    maxDelayMs: 3_000,
+  });
   await app.listen(config.port, '0.0.0.0');
 
   logger.log(

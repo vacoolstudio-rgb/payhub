@@ -1,7 +1,7 @@
 {
   "name": "payhub",
   "version": "1.0.0",
-  "description": "PayHub — wallets, double-entry ledger and payments platform",
+  "description": "PayHub \u2014 wallets, double-entry ledger and payments platform",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -10,11 +10,13 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json --resolve-full-paths && cp -R apps/ledger/proto dist/apps/ledger/proto",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:api": "node --enable-source-maps dist/apps/api/src/main.js",
+    "start:ledger": "node --enable-source-maps dist/apps/ledger/src/main.js",
     "start:worker": "node --enable-source-maps dist/apps/worker/src/main.js",
     "start:notifications": "node --enable-source-maps dist/apps/notifications/src/main.js",
-    "dev:api": "tsx watch --clear-screen=false apps/api/src/main.ts",
-    "dev:worker": "tsx watch --clear-screen=false apps/worker/src/main.ts",
-    "dev:notifications": "tsx watch --clear-screen=false apps/notifications/src/main.ts",
+    "dev:api": "node --watch --enable-source-maps dist/apps/api/src/main.js",
+    "dev:ledger": "node --watch --enable-source-maps dist/apps/ledger/src/main.js",
+    "dev:worker": "node --watch --enable-source-maps dist/apps/worker/src/main.js",
+    "dev:notifications": "node --watch --enable-source-maps dist/apps/notifications/src/main.js",
     "db:migrate": "tsx scripts/db.ts migrate",
     "db:revert": "tsx scripts/db.ts revert",
     "db:show": "tsx scripts/db.ts show",
@@ -25,7 +27,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "dev:docker": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
+    "dev:compile": "rm -f .dev-compiled && tsc -b tsconfig.dev.json && tsc-alias -p tsconfig.dev.json --resolve-full-paths && touch .dev-compiled && { tsc -b tsconfig.dev.json -w --preserveWatchOutput & tsc-alias -p tsconfig.dev.json --resolve-full-paths -w; }",
+    "dev:docker:down": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

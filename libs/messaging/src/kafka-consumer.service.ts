@@ -1,3 +1,4 @@
+import { retry } from '@payhub/shared';
 import {
   Inject,
   Injectable,
@@ -284,7 +285,22 @@ export class KafkaConsumerService implements OnApplicationBootstrap, OnApplicati
         return;
       }
 
-      await admin.createTopics({
+      /**
+       * Retried, then still fatal.
+       *
+       * Every service provisions on boot and a failure here has to stop
+       * the process — a consumer without its dead-letter topic
+       * redelivers a poison message for ever. But "the broker was busy
+       * for a moment" is not the same failure as "the broker will not
+       * have me", and four services starting at once against one broker
+       * produce the first routinely: in the local stack one of the four
+       * lost the race on most cold starts, and which one varied.
+       *
+       * Three attempts over a couple of seconds turn a transient into a
+       * pause. Anything that survives that is a real problem and still
+       * ends the process, which is what an orchestrator wants.
+       */
+      await retry(() => admin.createTopics({
         // Wait for leader election: subscribing to a topic whose partitions
         // have no leader yet fails exactly the same way as a missing topic.
         waitForLeaders: true,
@@ -301,7 +317,7 @@ export class KafkaConsumerService implements OnApplicationBootstrap, OnApplicati
               : []),
           ],
         })),
-      });
+      }), { attempts: 5, baseDelayMs: 500, maxDelayMs: 3_000 });
 
       this.logger.log(
         `Created ${missing.length} Kafka topic(s): ${missing.map((spec) => spec.topic).join(', ')}`,

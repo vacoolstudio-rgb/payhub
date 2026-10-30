@@ -1,0 +1,21 @@
+{
+  // The watch build, kept apart from the one that ships.
+  //
+  // `tsconfig.build.json` turns `incremental` off, which is right for a
+  // release: no state carried between builds, nothing to go stale. In
+  // watch mode it is expensive — the one-shot pass writes no
+  // `.tsbuildinfo`, so the watcher that follows it immediately compiles
+  // the whole project a second time. On a laptop that second pass is
+  // enough CPU to starve the Kafka broker that four services are
+  // provisioning topics against, and one of them loses the race.
+  //
+  // Source maps are on here for the same reason they are off there:
+  // development wants the stack trace, a release wants the smaller
+  // image.
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "sourceMap": true
+  }
+}

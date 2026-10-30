@@ -36,6 +36,10 @@ cp .env.example .env
 # everything, including the dashboard on :5173
 docker compose up -d --build
 
+# the same stack, rebuilding itself as you edit
+npm run dev:docker
+npm run dev:docker:down
+
 # or: infrastructure in Docker, services from source
 docker compose up -d postgres redis kafka
 npm install && npm run build
@@ -46,6 +50,22 @@ npm run db:migrate
 npm run db:seed                   # demo merchant, API key and payments
 cd web && npm install && npm run dev
 ```
+
+`dev:docker` overlays `docker-compose.dev.yml`: the four Node services
+move onto a `dev` image, the repository is mounted over `/app`, and one
+`builder` container compiles for all of them while each runs
+`node --watch` over the output. A save reaches the running service in
+about twenty seconds — five to compile, the rest to restart and
+reconnect to Postgres, Redis and Kafka. The browser dashboard is Vite's
+own dev server, so it updates immediately.
+
+Two things worth knowing. Installing a dependency still needs
+`--build`, because the dependency tree lives in the image rather than
+in the mount. And `docker compose down` on its own will not stop the
+`builder`, which only exists in the overlay — hence `dev:docker:down`.
+
+Plain `docker compose up` keeps running the compiled images, so the
+default remains the one that resembles production.
 
 | | |
 |---|---|

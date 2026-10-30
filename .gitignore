@@ -71,3 +71,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Local scratch
 /playground
+
+# Written by `dev:compile` once the first watch build lands.
+.dev-compiled
