@@ -135,6 +135,19 @@ async function bootstrap(): Promise<void> {
         .setVersion(config.serviceVersion)
         .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'jwt')
         .addApiKey({ type: 'apiKey', name: 'x-api-key', in: 'header' }, 'apiKey')
+        // Declared *and* required.
+        //
+        // Both schemes were defined and no operation referenced either,
+        // so Swagger drew an Authorize button and then sent every "Try
+        // it out" without a token. Reading the page suggested the API
+        // was authenticated; using it returned 401 with no indication
+        // that the document, rather than the request, was at fault.
+        //
+        // Applied globally because almost every route needs a
+        // principal. The handful that do not — login, register, the
+        // probes — are marked `@Public()` and simply ignore a token
+        // they are sent.
+        .addSecurityRequirements('jwt')
         .addServer(`http://localhost:${config.port}`, 'local')
         .build(),
       { operationIdFactory: (_controller, method) => method },
