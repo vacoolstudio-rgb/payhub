@@ -24,9 +24,23 @@ x-service-base: &service-base
   networks: [payhub]
 
 x-app-env: &app-env
-  NODE_ENV: production
-  LOG_LEVEL: info
-  LOG_PRETTY: "false"
+  # This file is the local stack, so it defaults to development and
+  # takes an override from `.env` like everything else here.
+  #
+  # It said `production`, hardcoded, and that is one setting with three
+  # visible consequences: Swagger is not mounted, so `/api/docs`
+  # answers 404; GraphQL serves no playground and refuses
+  # introspection, so a browser gets `Internal server error`; and the
+  # refresh cookie is sent `Secure`, which a browser will not return
+  # over `http://localhost` — so a session in the web UI does not
+  # survive a reload. The startup banner advertised the first two
+  # regardless.
+  #
+  # Production hardening is not lost: `k8s/base/config.yaml` sets
+  # `NODE_ENV: production`, which is where it belongs.
+  NODE_ENV: ${NODE_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_PRETTY: "${LOG_PRETTY:-false}"
   DATABASE_URL: postgresql://payhub:payhub@postgres:5432/payhub
   DATABASE_POOL_MAX: "20"
   REDIS_URL: redis://redis:6379

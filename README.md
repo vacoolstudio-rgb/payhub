@@ -50,7 +50,7 @@ cd web && npm install && npm run dev
 | | |
 |---|---|
 | Dashboard | http://localhost:5173 |
-| REST + OpenAPI | http://localhost:3000/api/v1 · http://localhost:3000/api/docs |
+| REST + OpenAPI | http://localhost:3000/api/docs — routes are mounted under `/api/v1`, which is a prefix and not itself a page |
 | GraphQL | http://localhost:3000/graphql |
 | Queues (Bull Board) | http://localhost:3002/admin/queues |
 | Kafka UI | http://localhost:8080 |

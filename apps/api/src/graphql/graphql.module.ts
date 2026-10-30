@@ -1,9 +1,13 @@
+import {
+  ApolloServerPluginLandingPageLocalDefault,
+} from '@apollo/server/plugin/landingPage/default';
+import {
+  ApolloServerPluginLandingPageDisabled,
+} from '@apollo/server/plugin/disabled';
 import { BadRequestException, HttpException, HttpStatus, Module } from '@nestjs/common';
 import { ApolloDriver, type ApolloDriverConfig } from '@nestjs/apollo';
 import { GraphQLModule as NestGraphQLModule } from '@nestjs/graphql';
 import { GraphQLError, type GraphQLFormattedError } from 'graphql';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { type AppConfig, appConfig } from '@payhub/config';
 import { DomainError } from '@payhub/kernel';
 import { MerchantModule } from '../modules/merchant/merchant.module.js';
@@ -14,7 +18,6 @@ import { GraphqlLoadersModule } from './loaders/loaders.module.js';
 import { DashboardResolver } from './resolvers/dashboard.resolver.js';
 import { queryCostPlugin } from './plugins/query-cost.plugin.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
 
 /**
  * GraphQL, scoped to the dashboard read model.
@@ -80,23 +83,23 @@ function validationMessages(exception: BadRequestException): string[] {
       inject: [appConfig.KEY, LoaderFactory],
       useFactory: (config: AppConfig, loaders: LoaderFactory) => ({
         /**
-         * Written to disk only in development.
+         * Kept in memory. Nothing reads the file.
          *
-         * The generated SDL is a tool for people — codegen, review,
-         * diffing a schema change — and nothing at runtime reads it.
-         * Producing it at startup means the process needs a writable
-         * filesystem, which the container deliberately does not give
-         * it: the image runs as `node` while `/app/dist` belongs to
-         * root, and the Kubernetes manifests set
-         * `readOnlyRootFilesystem: true` on purpose.
+         * Generating SDL at boot made starting the server depend on a
+         * writable filesystem, and the container does not offer one: it
+         * runs as `node` while `/app/dist` belongs to root, and the
+         * Kubernetes manifests set `readOnlyRootFilesystem: true` on
+         * purpose. The API got as far as Postgres, Redis and Kafka and
+         * then died with `EACCES`, restarting forever.
          *
-         * So the API could not start in its own image. It got as far as
-         * connecting to Postgres, Redis and Kafka, then died with
-         * `EACCES: permission denied, open '/app/dist/apps/api/schema.gql'`
-         * and restarted, forever. `true` keeps the schema in memory,
-         * which is all a server needs.
+         * The first attempt at this wrote the file outside production,
+         * which only moved the failure: the local compose stack is a
+         * development environment and a container all the same. The
+         * condition was never about the environment — a server does not
+         * need the file in any of them, and a search of the repository
+         * finds nothing that reads it.
          */
-        autoSchemaFile: config.isProduction ? true : join(here, '../../schema.gql'),
+        autoSchemaFile: true,
         sortSchema: true,
         path: '/graphql',
         playground: false,
@@ -115,7 +118,20 @@ function validationMessages(exception: BadRequestException): string[] {
         // Depth alone left the door open: aliased root fields are all at
         // depth one, so fifty aggregates in one query passed cleanly. Cost
         // prices each field by what serving it actually involves.
-        plugins: [queryCostPlugin({ maxDepth: 8, maxCost: 500 })],
+        plugins: [
+          queryCostPlugin({ maxDepth: 8, maxCost: 500 }),
+          // Something to open in a browser, outside production.
+          //
+          // `playground: false` turns off the old one and CSRF
+          // prevention blocks a plain GET, so opening `/graphql` — the
+          // URL the startup banner prints — answered a CSRF error with
+          // no way forward. The sandbox is served as a page; the
+          // protection stays on for operations, which is what it is
+          // for.
+          ...(config.isProduction
+            ? [ApolloServerPluginLandingPageDisabled()]
+            : [ApolloServerPluginLandingPageLocalDefault({ embed: true })]),
+        ],
         formatError: (formatted: GraphQLFormattedError, error: unknown): GraphQLFormattedError => {
           const original = error instanceof GraphQLError ? error.originalError : error;
 

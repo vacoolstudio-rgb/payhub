@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { Module } from '@nestjs/common';
 import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { ClsService } from 'nestjs-cls';
@@ -150,7 +151,15 @@ import {
           // Spread rather than `: undefined` — pino treats an absent
           // `transport` as "log JSON to stdout", which is not the same
           // statement as passing an explicit undefined.
-          ...(observability.logPretty
+          //
+          // Asked for *and* installed. `pino-pretty` is a development
+          // dependency and is not in the runtime image, so a container
+          // started with `LOG_PRETTY=true` died on boot with "unable to
+          // determine transport target" — a payments API refusing to
+          // start because a log formatter is missing. The flag is a
+          // preference about how lines look; it should never be able to
+          // stop the service.
+          ...(observability.logPretty && prettyAvailable()
             ? {
                 transport: {
                   target: 'pino-pretty',
@@ -165,3 +174,19 @@ import {
   exports: [PinoLoggerModule],
 })
 export class LoggerModule {}
+
+/**
+ * Whether `pino-pretty` can actually be loaded.
+ *
+ * Resolved rather than assumed: the flag that asks for it and the
+ * dependency that provides it live in different files, and only one of
+ * them ships in the runtime image.
+ */
+function prettyAvailable(): boolean {
+  try {
+    createRequire(import.meta.url).resolve('pino-pretty');
+    return true;
+  } catch {
+    return false;
+  }
+}

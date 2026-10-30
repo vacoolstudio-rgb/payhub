@@ -170,7 +170,13 @@ async function bootstrap(): Promise<void> {
   await app.listen(config.port, '0.0.0.0');
 
   logger.log(`PayHub API listening on :${config.port}`);
-  logger.log(`  REST      http://localhost:${config.port}/${config.globalPrefix}/v1`);
+  // A concrete endpoint, not the prefix. `/api/v1` is where routes are
+  // mounted and is not itself one, so the banner's first line sent
+  // every reader to a 404.
+  logger.log(
+    `  REST      http://localhost:${config.port}/${config.globalPrefix}/v1/payments  (needs a token)`,
+  );
+  logger.log(`  Health    http://localhost:${config.port}/health/ready`);
   logger.log(`  GraphQL   http://localhost:${config.port}/graphql`);
   logger.log(`  WebSocket ws://localhost:${config.port}/realtime`);
   logger.log(`  SSE       http://localhost:${config.port}/${config.globalPrefix}/v1/assistant/stream`);
