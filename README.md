@@ -78,9 +78,51 @@ default remains the one that resembles production.
 
 ```bash
 npm run typecheck && npm run lint
-npm test            # 316 unit tests, no containers, ~2 s
-npm run test:e2e    # 61 integration tests against real Postgres + Redis
+npm test            # 612 unit tests, no containers
+npm run test:e2e    # 157 integration tests against real Postgres, Redis and Kafka
 ```
+
+## Getting a credential
+
+Everything except login, registration and the probes needs one. The
+OpenAPI page has an **Authorize** button; these are what to paste into
+it.
+
+```bash
+# a JWT, as the seeded user — also the fastest way to try anything
+curl -s -X POST http://localhost:3000/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"ada@payhub.dev","password":"correct horse battery staple"}'
+# → { "accessToken": "eyJ…", "expiresIn": 899, "user": { … } }
+
+# or your own account
+curl -s -X POST http://localhost:3000/api/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a password of some length","displayName":"You"}'
+```
+
+The access token lasts fifteen minutes. The refresh token comes back
+in the body *and* as an httpOnly cookie scoped to `/api/v1/auth`, so a
+browser client keeps a session without JavaScript ever touching it.
+
+An API key is what a merchant's server uses instead, and only the
+merchant's owner can mint one:
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/merchants/$MERCHANT_ID/api-keys \
+  -H "authorization: Bearer $ACCESS_TOKEN" \
+  -H 'content-type: application/json' \
+  -H "idempotency-key: $(uuidgen)" \
+  -d '{"name":"my-integration","scopes":["payment:create","payment:read"]}'
+# → { "plaintext": "ph_test_…", "maskedKey": "ph_test_…8bSY", … }
+```
+
+`plaintext` is returned once and never again — only a peppered hash is
+stored, so a leaked database does not hand over working keys. Send it
+as `x-api-key` rather than as a bearer token.
+
+`npm run db:seed` prints a merchant, a key and a few payments to start
+from.
 
 ---
 
@@ -911,7 +953,7 @@ quarter.
 |---|---|---|
 | Domain | plain `new`, no framework | invariants: unbalanced entries impossible, no overdraft, legal transitions only, fair allocation |
 | Application | `Test.createTestingModule` with ports stubbed | orchestration, compensation and saga replay, without a database |
-| Integration | Testcontainers: real Postgres **and** real Redis | row locks, deadlock ordering, triggers, `CHECK` constraints, `SKIP LOCKED`, lease expiry, and every Lua script |
+| Integration | Testcontainers: real Postgres, Redis **and** Kafka | row locks, deadlock ordering, triggers, `CHECK` constraints, `SKIP LOCKED`, lease expiry, every Lua script, the retry ladder and the dead-letter queue |
 | Architecture | import graph assertions | the dependency rule and the context boundaries |
 
 Coverage is uneven on purpose. The domain and the kernel — where the money
